@@ -4,7 +4,7 @@ on:
   push:
 
 jobs:
-  Tests-net8:
+  Tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,14 +16,8 @@ jobs:
         with:
           dotnet-version: 9.0.4
 
-      - name: Cache Nuget package dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
-
       - name: Build
-        run: dotnet build --no-incremental -c Release
+        run: dotnet build -c Release
 
       - name: Test
         run: dotnet test Dodo.LocalCommandQueue.*Tests.dll
