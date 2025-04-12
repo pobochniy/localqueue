@@ -3,6 +3,8 @@ name: "Release: publish nuget packages"
 on:
   release:
     types: [published]
+env:
+  DOTNET_VERSION: "9.0.x"
 
 jobs:
   Check:
@@ -31,10 +33,7 @@ jobs:
       - name: Setup .NET Core SDK 9.0.4
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.4
-          source-url: ${{ secrets.NUGET_SOURCE }}
-        env:
-          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          dotnet-version: ${{ env.DOTNET_VERSION }}
 
       - name: Test
         run: dotnet test
