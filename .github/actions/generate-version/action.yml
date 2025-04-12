@@ -1,0 +1,49 @@
+﻿name: "Generate version"
+description: "Generate versions: image, backend, packages"
+
+inputs:
+  branch:
+    description: "Branch name"
+    required: true
+  commit:
+    description: "Commit hash"
+    required: true
+
+outputs:
+  image:
+    description: "Output"
+    value: ${{ steps.version.outputs.image }}
+  backend-suffix:
+    description: "Backend suffix"
+    value: ${{ steps.version.outputs.backend-suffix }}
+  packages-suffix:
+    description: "Packages suffix"
+    value: ${{ steps.version.outputs.packages-suffix }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Generate version
+      id: version
+      env:
+        COMMIT: ${{ inputs.commit }}
+        BRANCH: ${{ inputs.branch }}
+      shell: bash
+      run: |
+        commit=$(echo "${COMMIT:?Please set the 'commit' parameter.}" | cut -c1-7)
+        branch="$(echo "${BRANCH:?Please set the 'branch' parameter.}" | sed -e 's/[^0-9A-Za-z-]/-/g' | cut -c1-45)"
+        branch=${branch,,}
+        
+        image_version="$branch-$commit"
+        backend_version_suffix="$GITHUB_RUN_NUMBER-$commit-$branch"
+        packages_version_suffix="$branch"
+        
+        if [ "$branch" == "main" ]; then
+          packages_version_suffix=""
+        elif [[ ! $branch =~ ^[A-Za-z].* ]]; then
+          packages_version_suffix="v-$branch"
+        fi
+
+        echo "image=${image_version}" >> $GITHUB_OUTPUT
+        echo "backend-suffix=${backend_version_suffix}" >> $GITHUB_OUTPUT
+        echo "packages-suffix=${packages_version_suffix}" >> $GITHUB_OUTPUT

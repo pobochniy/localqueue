@@ -1,0 +1,49 @@
+name: "Release: publish nuget packages"
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  Check:
+    runs-on: ubuntu-latest
+    outputs: 
+      package-version: ${{ steps.package-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.ref }}
+      
+      - name: "Get package version"
+        uses: ./.github/actions/package-version
+        id: package-version
+  Release:
+    needs: Check
+    runs-on: ubuntu-latest
+    env:
+      ARTIFACT_DIR: out
+      PACKAGE_VERSION: ${{ needs.Check.outputs.package-version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+
+      - name: Setup .NET Core SDK 9.0.4
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.4
+          source-url: ${{ secrets.NUGET_SOURCE }}
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Test
+        run: dotnet test
+
+      - name: Publish
+        env:
+          PACK_ARGS: -c Release -o ${{ env.ARTIFACT_DIR }} -p:Version=${{ env.PACKAGE_VERSION }}
+        run: |
+          dotnet pack LocalQueue/LocalQueue.csproj $PACK_ARGS
+          dotnet pack LocalQueue.MySql/LocalQueue.MySql.csproj $PACK_ARGS
+          dotnet pack LocalQueue.OpenTelemetry/LocalQueue.OpenTelemetry.csproj $PACK_ARGS
+          dotnet nuget push -s ${{ secrets.NUGET_SOURCE }} --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate out/*.nupkg

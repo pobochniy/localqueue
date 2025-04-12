@@ -1,0 +1,86 @@
+name: "Package version"
+description: "Generate and check package version"
+
+inputs:
+  ref_name:
+    description: "Git ref name"
+    required: false
+    default: ${{ github.ref_name }}
+  commit_sha:
+    description: "Commit hash"
+    required: false
+    default: ${{ github.sha }}
+  is_pre_release:
+    description: "Is this a pre-release"
+    required: false
+    default: ${{ github.event.release.prerelease }}
+  main_branch:
+    description: "Main branch that is used for release packages"
+    required: false
+    default: ${{ github.event.repository.default_branch }}
+
+outputs:
+  version:
+    description: "Package version"
+    value: ${{ steps.version.outputs.version }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: version
+      shell: bash
+      env:
+        IS_PRE_RELEASE: ${{ inputs.is_pre_release }}
+        REF_NAME: ${{ inputs.ref_name }}
+        SHA: ${{ inputs.commit_sha }}
+        MAIN_BRANCH: ${{ inputs.main_branch }}
+      run: |
+        semver_regex="^v([0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9]+)*)$"
+        ref_name=${REF_NAME,,} # to lowercase
+        if [[ ! $ref_name =~ $semver_regex ]]; then
+          echo "::error ::Ref name should be 'v<SemVer> version'"
+          exit 1
+        fi
+        version=${ref_name#v} # remove prefix v
+        
+        if [[ $version =~ "-" ]]; then
+          is_pre_release_version=true
+        else
+          is_pre_release_version=false
+        fi
+        
+        if [[ $IS_PRE_RELEASE == "true" ]]; then
+          is_pre_release=true
+        else
+          is_pre_release=false
+        fi
+        
+        git fetch origin $MAIN_BRANCH --depth=1
+        
+        main_sha="$(git rev-parse origin/$MAIN_BRANCH)"
+        
+        if [[ $SHA == $main_sha ]]; then
+          is_main=true
+        else
+          is_main=false
+        fi
+        
+        if [[ $is_pre_release != $is_pre_release_version ]]; then
+          if $is_pre_release; then
+            echo "::error ::Pre-release package should have suffix in tag name"
+          else
+            echo "::error ::Release package should not have suffix in tag name"
+          fi
+          exit 1
+        fi
+        
+        if [[ $is_main == $is_pre_release ]]; then
+          if $is_main; then
+            echo "::error ::Can't publish pre-release packages from default branch"
+          else
+            echo "::error ::Can't publish release packages from non-default branch"
+          fi
+          exit 1
+        fi
+        echo "Package version: $version"
+        echo "version=${version}" >> $GITHUB_OUTPUT

@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+
+jobs:
+  Tests-net8:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
+
+      - name: Setup .NET Core SDK 9.0.4
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.4
+          source-url: ${{ secrets.NUGET_SOURCE }}
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Cache Nuget package dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+
+      - name: Build
+        run: dotnet build --no-incremental -c Release
+
+      - name: Test
+        run: dotnet test Dodo.LocalCommandQueue.*Tests.dll
