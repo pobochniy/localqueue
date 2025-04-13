@@ -25,6 +25,12 @@ jobs:
     env:
       ARTIFACT_DIR: out
       PACKAGE_VERSION: ${{ needs.Check.outputs.package-version }}
+    permissions:
+      contents: write # to be able to publish a GitHub release
+#      issues: write # to be able to comment on released issues
+#      pull-requests: write # to be able to comment on released pull requests
+#      id-token: write # to enable use of OIDC for npm provenance
+      packages: write # for pushing GitHub Nuget packages
     steps:
       - uses: actions/checkout@v4
         with:
