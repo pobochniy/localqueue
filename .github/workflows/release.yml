@@ -45,4 +45,4 @@ jobs:
           dotnet pack LocalQueue/LocalQueue.csproj $PACK_ARGS
           dotnet pack LocalQueue.MySql/LocalQueue.MySql.csproj $PACK_ARGS
           dotnet pack LocalQueue.OpenTelemetry/LocalQueue.OpenTelemetry.csproj $PACK_ARGS
-          dotnet nuget push --source "github" --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate out/*.nupkg
+          dotnet nuget push --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate out/*.nupkg
