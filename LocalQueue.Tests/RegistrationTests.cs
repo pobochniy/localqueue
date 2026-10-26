@@ -1,6 +1,7 @@
 ﻿using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LocalQueue.Diagnostics;
 using LocalQueue.MySql;
 using LocalQueue.Processing;
 using LocalQueue.Queue;
@@ -22,26 +23,11 @@ public class RegistrationTests
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.TryAddSingleton(Mock.Of<ICommandsStorage>());
-        serviceCollection.AddLocalCommandQueue();
+        serviceCollection.AddLocalCommandQueue(c => c
+            .UseStorage(Mock.Of<ILocalCommandsQueueStorage>()));
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
         serviceProvider.AssertLocalCommandQueueRegistered();
-    }
-    
-    [Test]
-    public void ShouldRegisterJsonSerializerAsDefault_WhenRegisterCommandQueue()
-    {
-        var serviceCollection = new ServiceCollection();
-        serviceCollection.AddLogging();
-
-        serviceCollection.AddLocalCommandQueue();
-
-        var serviceProvider = serviceCollection.BuildServiceProvider();
-
-        var serializer = serviceProvider.GetRequiredService<ICommandSerializer>();
-
-        Assert.That(serializer, Is.TypeOf<JsonCommandSerializer>());
     }
 
     [Test]
@@ -52,27 +38,105 @@ public class RegistrationTests
 
         serviceCollection.AddLocalCommandQueue(c =>
         {
+            c.UseStorage(Mock.Of<ILocalCommandsQueueStorage>());
             c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
         });
-        
+
         var serviceProvider = serviceCollection.BuildServiceProvider();
         serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
     }
-    
+
     [Test]
     public void CanRegisterCommandHandler()
     {
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.TryAddSingleton(Mock.Of<ICommandsStorage>());
+        serviceCollection.TryAddSingleton(Mock.Of<ILocalCommandsQueueWorkerStorage>());
         serviceCollection.AddSingleton<LocalCommandHandler>();
-        serviceCollection.AddLocalCommandQueueWorker(c => 
-            c.AddCommandHandler<LocalCommand, LocalCommandHandler>()
+        serviceCollection.AddLocalCommandQueueWorker(c => c
+            .UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>())
+            .AddCommandHandler<LocalCommand, LocalCommandHandler>()
         );
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
         serviceProvider.AssertCommandRegistered<LocalCommand>();
+    }
+
+    [Test]
+    public void CannotRegisterWorkerWithoutCommandHandlers()
+    {
+        var serviceCollection = new ServiceCollection();
+        serviceCollection.AddLogging();
+
+        Assert.Throws<InvalidOperationException>(() => serviceCollection.AddLocalCommandQueueWorker(c => c
+            .UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>())));
+    }
+
+    [Test]
+    public void CannotRegisterMySqlWorkerWithMalformedConnectionString()
+    {
+        var serviceCollection = new ServiceCollection();
+        serviceCollection.AddLogging();
+        serviceCollection.AddSingleton<LocalCommandHandler>();
+
+        Assert.Throws<ArgumentException>(() => serviceCollection.AddLocalCommandQueueWorker(c =>
+        {
+            c.UseMySqlStorage(o => o.ConnectionString = "malformed");
+            c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
+        }));
+    }
+
+    [Test]
+    public async Task EachWorkerFetchesOnlyCommandsItHasHandlersFor()
+    {
+        var localCommandStorage = new PrefetchRecordingStorage();
+        var otherLocalCommandStorage = new PrefetchRecordingStorage();
+        var serviceCollection = new ServiceCollection();
+        serviceCollection.AddLogging();
+
+        serviceCollection
+            .AddLocalCommandQueueWorker(c => c
+                .UseStorage(localCommandStorage.Storage)
+                .AddCommandHandler<LocalCommand, LocalCommandHandler>())
+            .AddLocalCommandQueueWorker(c => c
+                .UseStorage(otherLocalCommandStorage.Storage)
+                .AddCommandHandler<OtherLocalCommand, OtherLocalCommandHandler>());
+
+        var serviceProvider = serviceCollection.BuildServiceProvider();
+        using var cts = new CancellationTokenSource();
+        var fetching = serviceProvider.GetServices<CommandFetcher>()
+            .Select(fetcher => fetcher.Run(cts.Token))
+            .ToArray();
+
+        var localCommandTypes = await localCommandStorage.FetchedCommandTypes.WaitAsync(TimeSpan.FromSeconds(5));
+        var otherLocalCommandTypes = await otherLocalCommandStorage.FetchedCommandTypes.WaitAsync(TimeSpan.FromSeconds(5));
+        await cts.CancelAsync();
+        Assert.CatchAsync<OperationCanceledException>(() => Task.WhenAll(fetching));
+
+        Assert.That(localCommandTypes, Is.EquivalentTo(new[] { typeof(LocalCommand).FullName }));
+        Assert.That(otherLocalCommandTypes, Is.EquivalentTo(new[] { typeof(OtherLocalCommand).FullName }));
+    }
+
+    private sealed class PrefetchRecordingStorage
+    {
+        private readonly TaskCompletionSource<IReadOnlyCollection<string>> _fetchedCommandTypes =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public PrefetchRecordingStorage()
+        {
+            var storage = new Mock<ILocalCommandsQueueWorkerStorage>();
+            storage
+                .Setup(s => s.Prefetch(It.IsAny<int>(), It.IsAny<TimeSpan>(), It.IsAny<IReadOnlyCollection<string>>(), It.IsAny<CancellationToken>()))
+                .Callback<int, TimeSpan, IReadOnlyCollection<string>, CancellationToken>((_, _, commandTypes, _) =>
+                    _fetchedCommandTypes.TrySetResult(commandTypes))
+                .ReturnsAsync(Array.Empty<CommandRecord>());
+            Storage = storage.Object;
+        }
+
+        public ILocalCommandsQueueWorkerStorage Storage { get; }
+
+        public Task<IReadOnlyCollection<string>> FetchedCommandTypes => _fetchedCommandTypes.Task;
     }
 
     [Test]
@@ -81,9 +145,9 @@ public class RegistrationTests
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.TryAddSingleton(Mock.Of<ICommandsStorage>());
-        serviceCollection.AddLocalCommandQueueWorker(c => 
-            c.AddCommandHandler<LocalCommand, Mediator>(h => h.Send)
+        serviceCollection.AddLocalCommandQueueWorker(c => c
+            .UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>())
+            .AddCommandHandler<LocalCommand, Mediator>(h => h.Send)
         );
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
@@ -96,33 +160,14 @@ public class RegistrationTests
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.TryAddSingleton(Mock.Of<ICommandsStorage>());
-        serviceCollection.AddLocalCommandQueueWorker(c =>
-            c.AddCommandHandler<LocalCommand>((sp, command, ct) =>
+        serviceCollection.AddLocalCommandQueueWorker(c => c
+            .UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>())
+            .AddCommandHandler<LocalCommand>((sp, command, ct) =>
                 sp.GetRequiredService<Mediator>().Send(command, ct))
         );
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
         serviceProvider.AssertCommandRegistered<LocalCommand>();
-    }
-
-    [Test]
-    public void ShouldRegisterJsonSerializerAsDefault()
-    {
-        var serviceCollection = new ServiceCollection();
-        serviceCollection.AddLogging();
-
-        serviceCollection.AddLocalCommandQueueWorker(c =>
-            c.AddCommandHandler<LocalCommand, LocalCommandHandler>()
-        );
-
-        var serviceProvider = serviceCollection.BuildServiceProvider();
-
-        var deserializer = serviceProvider.GetRequiredService<ICommandDeserializer>();
-        var serializer = serviceProvider.GetRequiredService<ICommandSerializer>();
-
-        Assert.That(deserializer, Is.TypeOf<JsonCommandSerializer>());
-        Assert.That(serializer, Is.TypeOf<JsonCommandSerializer>());
     }
 
     [Test]
@@ -133,12 +178,13 @@ public class RegistrationTests
 
         serviceCollection.AddLocalCommandQueueWorker(c =>
         {
+            c.UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>());
             c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
             c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
         });
-        
+
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
+        serviceProvider.AssertICommandSerializerContainsConverterForWorker<LocalStringConverter>();
     }
 
     [Test]
@@ -155,13 +201,15 @@ public class RegistrationTests
         var configuration = new ConfigurationBuilder()
             .AddCommandProcessingOptions(options, prefix: "LocalCommandsQueue")
             .Build();
-        
+
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.TryAddSingleton(Mock.Of<ICommandsStorage>());
+        serviceCollection.TryAddSingleton(Mock.Of<ILocalCommandsQueueStorage>());
         serviceCollection.AddLocalCommandQueueWorker(configuration.GetSection("LocalCommandsQueue"),
-            c => c.AddCommandHandler<LocalCommand, LocalCommandHandler>()
+            c => c
+                .UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>())
+                .AddCommandHandler<LocalCommand, LocalCommandHandler>()
         );
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
@@ -175,14 +223,15 @@ public class RegistrationTests
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.TryAddSingleton(Mock.Of<ICommandsStorage>());
+        serviceCollection.TryAddSingleton(Mock.Of<ILocalCommandsQueueStorage>());
         serviceCollection.AddLocalCommandQueueWorker(c =>
         {
+            c.UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>());
             c.PrefetchCount = options.PrefetchCount;
             c.WorkersCount = options.WorkersCount;
             c.InvisibilityTimeout = options.InvisibilityTimeout;
             c.IdleTimeout = options.IdleTimeout;
-            
+
             c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
         });
 
@@ -197,11 +246,10 @@ public class RegistrationTests
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.TryAddSingleton(Mock.Of<ICommandsStorage>());
-        serviceCollection.AddLocalCommandQueueWorker(options, c =>
-        {
-            c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
-        });
+        serviceCollection.TryAddSingleton(Mock.Of<ILocalCommandsQueueStorage>());
+        serviceCollection.AddLocalCommandQueueWorker(options, c => c
+            .UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>())
+            .AddCommandHandler<LocalCommand, LocalCommandHandler>());
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
         serviceProvider.AssertCommandProcessingOptionsAreSame(options);
@@ -210,203 +258,206 @@ public class RegistrationTests
     [Test]
     public void CanConfigureMysqlStorageFromIConfiguration()
     {
-        var options = new CommandStorageOptionsFake();
+        var options = new MySqlCommandQueueStorageOptionsFake();
         var configuration = new ConfigurationBuilder()
-            .AddCommandStorageOptions(options, prefix: "MySqlLocalCommandsQueue")
+            .AddMySqlCommandStorageOptions(options, prefix: "MySqlLocalCommandsQueue")
             .Build();
-        
+
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.AddMySqlCommandsStorage(configuration.GetSection("MySqlLocalCommandsQueue"));
+        serviceCollection.AddLocalCommandQueue(c =>
+            c.UseMySqlStorage(configuration.GetSection("MySqlLocalCommandsQueue")));
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(options);
     }
 
     [Test]
     public void CanConfigureMysqlStorageFromAction()
     {
-        var options = new CommandStorageOptionsFake();
+        var options = new MySqlCommandQueueStorageOptionsFake();
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.AddMySqlCommandsStorage((_, c) =>
+        serviceCollection.AddLocalCommandQueue(c =>
         {
-            c.ConnectionString = options.ConnectionString;
-            c.TableName = options.TableName;
-            c.InsertBatchSize = options.InsertBatchSize;
-            c.CommandTimeoutSeconds = options.CommandTimeoutSeconds;
+            c.UseMySqlStorage(o =>
+            {
+                o.TableName = options.TableName;
+                o.InsertBatchSize = options.InsertBatchSize;
+                o.CommandTimeoutSeconds = options.CommandTimeoutSeconds;
+            });
         });
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(options);
     }
 
     [Test]
-    public void CanConfigureMysqlStorageFromInstance()
+    public void CanConfigureMysqlStorageFromOptionInstance()
     {
-        var options = new CommandStorageOptionsFake();
+        var options = new MySqlCommandQueueStorageOptionsFake();
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.AddMySqlCommandsStorage(options);
+        serviceCollection.AddLocalCommandQueue(c => c.UseMySqlStorage(options));
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(options);
     }
 
     [Test]
     public void CanConfigureMySqlCommandQueueFromIConfiguration()
     {
-        var options = new CommandStorageOptionsFake();
+        var options = new MySqlCommandQueueStorageOptionsFake();
         var configuration = new ConfigurationBuilder()
-            .AddCommandStorageOptions(options, prefix: "MySqlLocalCommandsQueue")
+            .AddMySqlCommandStorageOptions(options, prefix: "MySqlLocalCommandsQueue")
             .Build();
-        
+
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.AddMySqlCommandQueue(configuration.GetSection("MySqlLocalCommandsQueue"), queueConfigure: c =>
+        serviceCollection.AddLocalCommandQueue(c =>
         {
+            c.UseMySqlStorage(configuration.GetSection("MySqlLocalCommandsQueue"));
             c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
         });
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(options);
         serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
     }
 
     [Test]
     public void CanConfigureMySqlCommandQueueFromAction()
     {
-        var options = new CommandStorageOptionsFake();
+        var options = new MySqlCommandQueueStorageOptionsFake();
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.AddMySqlCommandQueue(storageConfigure: (_, c) =>
+        serviceCollection.AddLocalCommandQueue(c =>
+        {
+            c.UseMySqlStorage(o =>
             {
-                c.ConnectionString = options.ConnectionString;
-                c.TableName = options.TableName;
-                c.InsertBatchSize = options.InsertBatchSize;
-                c.CommandTimeoutSeconds = options.CommandTimeoutSeconds;
-            },
-            queueConfigure: c =>
-            {
-                c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
+                o.TableName = options.TableName;
+                o.InsertBatchSize = options.InsertBatchSize;
+                o.CommandTimeoutSeconds = options.CommandTimeoutSeconds;
             });
+            c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
+        });
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(options);
         serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
     }
 
     [Test]
     public void CanConfigureMySqlCommandQueueFromInstance()
     {
-        var options = new CommandStorageOptionsFake();
+        var options = new MySqlCommandQueueStorageOptionsFake();
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
-        serviceCollection.AddMySqlCommandQueue(options, queueConfigure: c =>
+        serviceCollection.AddLocalCommandQueue(c =>
         {
+            c.UseMySqlStorage(options);
             c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
         });
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(options);
         serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
     }
 
     [Test]
     public void CanConfigureMySqlCommandQueueWorkerFromIConfiguration()
     {
-        var options = new CommandStorageOptionsFake();
+        var workerStorageOptions = new MySqlLocalCommandsQueueWorkerStorageOptionsFake();
         var configuration = new ConfigurationBuilder()
-            .AddCommandStorageOptions(options, prefix: "MySqlLocalCommandsQueue")
+            .AddMySqlCommandWorkerStorageOptions(workerStorageOptions, prefix: "MySqlLocalCommandsQueue")
             .Build();
-        
+
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
         serviceCollection.AddSingleton<LocalCommandHandler>();
-        serviceCollection.AddMySqlCommandQueueWorker(configuration.GetSection("MySqlLocalCommandsQueue"), workerConfigure: c =>
+        serviceCollection.AddLocalCommandQueueWorker(c =>
         {
+            c.UseMySqlStorage(configuration.GetSection("MySqlLocalCommandsQueue"));
             c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
             c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
         });
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(workerStorageOptions);
         serviceProvider.AssertCommandRegistered<LocalCommand>();
-        serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
+        serviceProvider.AssertICommandSerializerContainsConverterForWorker<LocalStringConverter>();
     }
 
     [Test]
     public void CanConfigureMySqlCommandQueueWorkerFromAction()
     {
-        var options = new CommandStorageOptionsFake();
+        var options = new MySqlLocalCommandsQueueWorkerStorageOptionsFake();
         var serviceCollection = new ServiceCollection();
         serviceCollection.AddLogging();
 
         serviceCollection.AddSingleton<LocalCommandHandler>();
-        serviceCollection.AddMySqlCommandQueueWorker(storageConfigure: (_, c) =>
-            {
-                c.ConnectionString = options.ConnectionString;
-                c.TableName = options.TableName;
-                c.InsertBatchSize = options.InsertBatchSize;
-                c.CommandTimeoutSeconds = options.CommandTimeoutSeconds;
-            },
-            workerConfigure: c =>
-            {
-                c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
-                c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
-            });
-
-        var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
-        serviceProvider.AssertCommandRegistered<LocalCommand>();
-        serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
-    }
-
-    [Test]
-    public void CanConfigureMySqlCommandQueueWorkerFromInstance()
-    {
-        var configurator = new LocalCommandQueueWorkerConfiguratorFake();
-        configurator.AddCommandHandler<LocalCommand, LocalCommandHandler>();
-        configurator.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
-        
-        var options = new CommandStorageOptionsFake();
-        var serviceCollection = new ServiceCollection();
-        serviceCollection.AddLogging();
-
-        serviceCollection.AddSingleton<LocalCommandHandler>();
-        serviceCollection.AddMySqlCommandQueueWorker(options, configurator);
-
-        var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
-        serviceProvider.AssertCommandRegistered<LocalCommand>();
-        serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
-    }
-
-    [Test]
-    public void CanConfigureMySqlCommandQueueWorkerAsExample()
-    {
-        var options = new CommandStorageOptionsFake();
-        var serviceCollection = new ServiceCollection();
-        serviceCollection.AddLogging();
-
-        serviceCollection.AddSingleton<LocalCommandHandler>();
-        serviceCollection.AddMySqlCommandQueueWorker(options, workerConfigure: c =>
+        serviceCollection.AddLocalCommandQueueWorker(c =>
         {
+            c.UseMySqlStorage(o =>
+            {
+                o.ConnectionString = options.ConnectionString;
+                o.TableName = options.TableName;
+                o.CommandTimeoutSeconds = options.CommandTimeoutSeconds;
+            });
             c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
             c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
         });
 
         var serviceProvider = serviceCollection.BuildServiceProvider();
-        serviceProvider.AssertCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(options);
         serviceProvider.AssertCommandRegistered<LocalCommand>();
-        serviceProvider.AssertICommandSerializerContainsConverter<LocalStringConverter>();
+        serviceProvider.AssertICommandSerializerContainsConverterForWorker<LocalStringConverter>();
+    }
+
+    [Test]
+    public void CanConfigureMySqlCommandQueueWorkerFromInstance()
+    {
+        var options = new MySqlLocalCommandsQueueWorkerStorageOptionsFake();
+        var serviceCollection = new ServiceCollection();
+        serviceCollection.AddLogging();
+        serviceCollection.AddSingleton<LocalCommandHandler>();
+
+        serviceCollection.AddLocalCommandQueueWorker(c =>
+        {
+            c.UseMySqlStorage(options);
+            c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
+            c.ConfigureSerializer(o => { o.Converters.Add(new LocalStringConverter()); });
+        });
+
+        var serviceProvider = serviceCollection.BuildServiceProvider();
+        serviceProvider.AssertMySqlCommandStorageOptionsAreSame(options);
+        serviceProvider.AssertCommandRegistered<LocalCommand>();
+        serviceProvider.AssertICommandSerializerContainsConverterForWorker<LocalStringConverter>();
+    }
+    
+    
+    [Test]
+    public void StorageSummaryCollectorShouldHaveCommandTypesForMetrics()
+    {
+        var serviceCollection = new ServiceCollection();
+        serviceCollection.AddLogging();
+        serviceCollection.AddSingleton<LocalCommandHandler>();
+
+        serviceCollection.AddLocalCommandQueueWorker(c =>
+        {
+            c.UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>(x => x.DataSourceName == "datasource"));
+            c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
+        });
+
+        var serviceProvider = serviceCollection.BuildServiceProvider();
+        serviceProvider.AssertServiceHasCommandType<LocalCommand>();
     }
 
     private record LocalCommand(Guid Id);
@@ -451,7 +502,8 @@ public class RegistrationTests
             PrefetchCount = Random.Shared.Not(10);
             WorkersCount = Random.Shared.Not(10, PrefetchCount);
             InvisibilityTimeout = TimeSpan.FromSeconds(Random.Shared.Not(10, PrefetchCount, WorkersCount));
-            IdleTimeout = TimeSpan.FromSeconds(Random.Shared.Not(3, PrefetchCount, WorkersCount, InvisibilityTimeout.Seconds));
+            IdleTimeout =
+                TimeSpan.FromSeconds(Random.Shared.Not(3, PrefetchCount, WorkersCount, InvisibilityTimeout.Seconds));
         }
     }
 
@@ -462,18 +514,28 @@ public class RegistrationTests
             PrefetchCount = Random.Shared.Not(10);
             WorkersCount = Random.Shared.Not(10, PrefetchCount);
             InvisibilityTimeout = TimeSpan.FromSeconds(Random.Shared.Not(10, PrefetchCount, WorkersCount));
-            IdleTimeout = TimeSpan.FromSeconds(Random.Shared.Not(3, PrefetchCount, WorkersCount, InvisibilityTimeout.Seconds));
+            IdleTimeout =
+                TimeSpan.FromSeconds(Random.Shared.Not(3, PrefetchCount, WorkersCount, InvisibilityTimeout.Seconds));
         }
     }
 
-    private class CommandStorageOptionsFake : CommandStorageOptions
+    private class MySqlCommandQueueStorageOptionsFake : MySqlCommandQueueStorageOptions
     {
-        public CommandStorageOptionsFake()
+        public MySqlCommandQueueStorageOptionsFake()
         {
-            ConnectionString = $"connectionString_{TestContext.CurrentContext.Test.Name}";
             TableName = $"table_{TestContext.CurrentContext.Test.Name}";
             InsertBatchSize = Random.Shared.Not(100);
             CommandTimeoutSeconds = Random.Shared.Not(5, InsertBatchSize);
+        }
+    }
+
+    private class MySqlLocalCommandsQueueWorkerStorageOptionsFake : MySqlLocalCommandsQueueWorkerStorageOptions
+    {
+        public MySqlLocalCommandsQueueWorkerStorageOptionsFake()
+        {
+            ConnectionString = $"Server=server;Database={TestContext.CurrentContext.Test.Name}";
+            TableName = $"table_{TestContext.CurrentContext.Test.Name}";
+            CommandTimeoutSeconds = Random.Shared.Not(5);
         }
     }
 }
@@ -482,22 +544,61 @@ public static class ServiceProviderAssertionExtension
 {
     public static void AssertCommandRegistered<TCommand>(this ServiceProvider serviceProvider)
     {
-        var hostedServices = serviceProvider.GetServices<IHostedService>();
-        var commandHandler = serviceProvider.GetService<ICommandHandler<TCommand>>();
-        Assert.That(commandHandler, Is.Not.Null);
-        
+        var hostedServices = serviceProvider.GetServices<IHostedService>().ToArray();
         var commandProcessorHostedService =
             hostedServices.OfType<CommandProcessorHostedService>().SingleOrDefault();
         var fetchCommandHostedService =
             hostedServices.OfType<FetchCommandHostedService>().SingleOrDefault();
+
         Assert.That(commandProcessorHostedService, Is.Not.Null);
         Assert.That(fetchCommandHostedService, Is.Not.Null);
+
+        var handler = GetCommandHandler<TCommand>(serviceProvider);
+        Assert.That(handler, Is.Not.Null);
     }
 
-    public static void AssertCommandProcessingOptionsAreSame(this IServiceProvider serviceProvider, CommandProcessingOptions options)
+    private static IEnumerable<CommandProcessor> GetCommandProcessors(this IServiceProvider serviceProvider)
     {
-        var registeredOptions = serviceProvider.GetRequiredService<CommandProcessingOptions>();
-        
+        var hostedServices = serviceProvider.GetServices<IHostedService>().ToArray();
+        var commandProcessorHostedService =
+            hostedServices.OfType<CommandProcessorHostedService>().Single();
+
+        return (IEnumerable<CommandProcessor>)commandProcessorHostedService
+            .GetType().GetField("_commandProcessors", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(commandProcessorHostedService)!;
+    }
+
+    private static IRawCommandHandler? GetCommandHandler<TCommand>(this IServiceProvider serviceProvider)
+    {
+        var commandProcessors = GetCommandProcessors(serviceProvider);
+        return commandProcessors.SelectMany(x =>
+                (IEnumerable<IRawCommandHandler>)x.GetType()
+                    .GetField("_commandHandlers", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(x)!)
+            .SingleOrDefault(x => x.CommandType == typeof(TCommand).FullName);
+    }
+
+    private static IRawCommandHandler GetCommandHandler(this IServiceProvider serviceProvider)
+    {
+        var commandProcessors = GetCommandProcessors(serviceProvider);
+        var rawCommandHandlers = commandProcessors
+            .SelectMany(x => (IEnumerable<IRawCommandHandler>)x
+                .GetType()
+                .GetField("_commandHandlers", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(x)!);
+        return rawCommandHandlers.First();
+    }
+
+    public static void AssertCommandProcessingOptionsAreSame(this IServiceProvider serviceProvider,
+        CommandProcessingOptions options)
+    {
+        var commandProcessors = GetCommandProcessors(serviceProvider);
+        var commandProcessor = commandProcessors.First();
+
+        var registeredOptions = (CommandProcessingOptions)commandProcessor
+            .GetType()
+            .GetField("_options", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(commandProcessor)!;
+
         Assert.Multiple(() =>
         {
             Assert.That(registeredOptions.PrefetchCount, Is.EqualTo(options.PrefetchCount));
@@ -510,7 +611,7 @@ public static class ServiceProviderAssertionExtension
     public static void AssertLocalCommandQueueRegistered(this IServiceProvider serviceProvider)
     {
         var commandsQueue = serviceProvider.GetService<ICommandsQueue>();
-        
+
         Assert.Multiple(() =>
         {
             Assert.That(commandsQueue, Is.Not.Null);
@@ -518,31 +619,87 @@ public static class ServiceProviderAssertionExtension
         });
     }
 
-    public static void AssertCommandStorageOptionsAreSame(this IServiceProvider serviceProvider, CommandStorageOptions options)
+    public static void AssertMySqlCommandStorageOptionsAreSame(this IServiceProvider serviceProvider,
+        MySqlLocalCommandsQueueWorkerStorageOptions options)
     {
-        var storage = (MySqlCommandStorage) serviceProvider.GetRequiredService<ICommandsStorage>();
+        var rawCommandHandler = GetCommandHandler(serviceProvider);
+        var storageFactory = (Func<IServiceProvider, ILocalCommandsQueueWorkerStorage>)rawCommandHandler
+            .GetType()
+            .GetField("_storageFactory", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(rawCommandHandler)!;
+
+        var storage = (MySqlLocalCommandsQueueWorkerStorage)storageFactory(serviceProvider);
+
         var optionsField = storage
             .GetType()
             .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
-            .Single(f => f.FieldType == typeof(CommandStorageOptions));
+            .Single(f => f.FieldType == typeof(MySqlLocalCommandsQueueWorkerStorageOptions));
 
-        var registeredOptions = (CommandStorageOptions) optionsField.GetValue(storage)!;
-        
+        var registeredOptions = (MySqlLocalCommandsQueueWorkerStorageOptions)optionsField.GetValue(storage)!;
+
         Assert.Multiple(() =>
         {
             Assert.That(registeredOptions.ConnectionString, Is.EqualTo(options.ConnectionString));
             Assert.That(registeredOptions.TableName, Is.EqualTo(options.TableName));
-            Assert.That(registeredOptions.InsertBatchSize, Is.EqualTo(options.InsertBatchSize));
             Assert.That(registeredOptions.CommandTimeoutSeconds, Is.EqualTo(options.CommandTimeoutSeconds));
+        });
+    }
+
+    public static void AssertMySqlCommandStorageOptionsAreSame(this IServiceProvider serviceProvider,
+        MySqlCommandQueueStorageOptions options)
+    {
+        var commandsQueue = serviceProvider.GetRequiredService<ICommandsQueue>();
+        var storage = commandsQueue
+            .GetType()
+            .GetField("_storage", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(commandsQueue)!;
+        var optionsField = storage
+            .GetType()
+            .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
+            .Single(f => f.FieldType == typeof(MySqlCommandQueueStorageOptions));
+
+        var registeredOptions = (MySqlCommandQueueStorageOptions)optionsField.GetValue(storage)!;
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(registeredOptions.TableName, Is.EqualTo(options.TableName));
+            Assert.That(registeredOptions.CommandTimeoutSeconds, Is.EqualTo(options.CommandTimeoutSeconds));
+            Assert.That(registeredOptions.InsertBatchSize, Is.EqualTo(options.InsertBatchSize));
         });
     }
 
     public static void AssertICommandSerializerContainsConverter<T>(this IServiceProvider serviceProvider)
     {
-        var serializer = serviceProvider.GetRequiredService<ICommandSerializer>();
+        var commandQueue = serviceProvider.GetRequiredService<ICommandsQueue>();
+        var serializer = (ICommandSerializer)commandQueue
+            .GetType()
+            .GetField("_serializer", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(commandQueue)!;
+
         var serializerOptions = serializer.GetOptions();
         Assert.That(serializerOptions.Converters.Any(c => c.GetType() == typeof(T)), Is.True);
     }
+
+    public static void AssertICommandSerializerContainsConverterForWorker<TConverter>(
+        this IServiceProvider serviceProvider)
+    {
+        var rawCommandHandler = GetCommandHandler(serviceProvider);
+        var serializer = (ICommandDeserializer) rawCommandHandler
+            .GetType()
+            .GetField("_serializer", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(rawCommandHandler)!;
+
+        var serializerOptions = serializer.GetOptions();
+        Assert.That(serializerOptions.Converters.Any(c => c.GetType() == typeof(TConverter)), Is.True);
+    }
+
+    public static void AssertServiceHasCommandType<TCommand>(this IServiceProvider serviceProvider)
+    {
+        var commandTypes = serviceProvider.GetServices<StorageSummarySource>().Single().CommandTypes;
+        var commandType = commandTypes.FirstOrDefault(t => t == typeof(TCommand).FullName!);
+        Assert.That(commandType, Is.Not.Null);
+    }
+
 }
 
 public static class ConfigurationBuilderExtensions
@@ -561,14 +718,13 @@ public static class ConfigurationBuilderExtensions
 
         return builder.AddInMemoryCollection(myConfiguration!);
     }
-    
-    public static IConfigurationBuilder AddCommandStorageOptions(this IConfigurationBuilder builder,
-        CommandStorageOptions options,
+
+    public static IConfigurationBuilder AddMySqlCommandStorageOptions(this IConfigurationBuilder builder,
+        MySqlCommandQueueStorageOptions options,
         string? prefix = null)
     {
         var myConfiguration = new Dictionary<string, string>
         {
-            { "ConnectionString".WithPrefix(prefix), options.ConnectionString },
             { "TableName".WithPrefix(prefix), options.TableName },
             { "InsertBatchSize".WithPrefix(prefix), options.InsertBatchSize.ToString() },
             { "CommandTimeoutSeconds".WithPrefix(prefix), options.CommandTimeoutSeconds.ToString() },
@@ -576,8 +732,30 @@ public static class ConfigurationBuilderExtensions
 
         return builder.AddInMemoryCollection(myConfiguration!);
     }
-    
+
+    public static IConfigurationBuilder AddMySqlCommandWorkerStorageOptions(this IConfigurationBuilder builder,
+        MySqlLocalCommandsQueueWorkerStorageOptions options,
+        string? prefix = null)
+    {
+        var myConfiguration = new Dictionary<string, string>
+        {
+            { "TableName".WithPrefix(prefix), options.TableName },
+            { "ConnectionString".WithPrefix(prefix), options.ConnectionString },
+            { "CommandTimeoutSeconds".WithPrefix(prefix), options.CommandTimeoutSeconds.ToString() },
+        };
+
+        return builder.AddInMemoryCollection(myConfiguration!);
+    }
+
     internal static JsonSerializerOptions GetOptions(this ICommandSerializer serializer)
+    {
+        var optionsField = typeof(JsonCommandSerializer)
+            .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
+            .First(f => f.FieldType == typeof(JsonSerializerOptions));
+
+        return (JsonSerializerOptions)optionsField.GetValue(serializer)!;
+    }
+    internal static JsonSerializerOptions GetOptions(this ICommandDeserializer serializer)
     {
         var optionsField = typeof(JsonCommandSerializer)
             .GetFields(BindingFlags.NonPublic | BindingFlags.Instance)

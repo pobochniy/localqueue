@@ -6,8 +6,8 @@ namespace LocalQueue.Diagnostics;
 
 internal static class LocalQueueMetrics
 {
-    private static readonly ConcurrentDictionary<string, int> QueuedCommandsByType = new();
-    private static readonly ConcurrentDictionary<string, int> MaxTryCountByType = new();
+    private static readonly ConcurrentDictionary<(string DataSourceName, string CommandType), int> QueuedCommandsByType = new();
+    private static readonly ConcurrentDictionary<(string DataSourceName, string CommandType), int> MaxTryCountByType = new();
     private static readonly Meter Meter = new(Instruments.MeterName);
 
     private static readonly Histogram<double> CommandProcessingTimeHistogram = Meter.CreateHistogram<double>(
@@ -40,43 +40,52 @@ internal static class LocalQueueMetrics
             "Count of command processing tries");
     }
 
-    public static void InitializeCommandTypes(IEnumerable<string> commandTypes)
+    public static void InitializeCommandTypes(string datasourceName, IEnumerable<string> commandTypes)
     {
         foreach (var commandType in commandTypes)
         {
-            QueuedCommandsByType.TryAdd(commandType, 0);
-            MaxTryCountByType.TryAdd(commandType, 0);
+            QueuedCommandsByType.TryAdd((datasourceName, commandType), 0);
+            MaxTryCountByType.TryAdd((datasourceName, commandType), 0);
         }
     }
 
     private static IEnumerable<Measurement<int>> ObserveStorageQueue()
     {
-        return QueuedCommandsByType.Select(kv => new Measurement<int>(
-            kv.Value, new KeyValuePair<string, object?>("commandType", kv.Key)));
+        return QueuedCommandsByType.Select(kv => new Measurement<int>(kv.Value, 
+            new KeyValuePair<string, object?>("commandType", kv.Key.CommandType),
+            new KeyValuePair<string, object?>("dataSource", kv.Key.DataSourceName)
+            ));
     }
 
     private static IEnumerable<Measurement<int>> ObserveMaxTryCount()
     {
         return MaxTryCountByType.Select(kv => new Measurement<int>(
-            kv.Value, new KeyValuePair<string, object?>("commandType", kv.Key)));
+            kv.Value,
+            new KeyValuePair<string, object?>("commandType", kv.Key.CommandType),
+            new KeyValuePair<string, object?>("dataSource", kv.Key.DataSourceName)));
     }
 
-    internal static void RecordStorageSummary(IEnumerable<LocalQueueStorageSummary> summary)
+    internal static void RecordStorageSummary(string datasourceName, IEnumerable<LocalQueueStorageSummary> summary)
     {
-        foreach (var key in QueuedCommandsByType.Keys)
+        var summaryCommandTypes = new HashSet<string>();
+        foreach (var summaryEntry in summary)
+        {
+            QueuedCommandsByType[(datasourceName, summaryEntry.CommandType)] = summaryEntry.Count;
+            MaxTryCountByType[(datasourceName, summaryEntry.CommandType)] = summaryEntry.MaxTryCount;
+            summaryCommandTypes.Add(summaryEntry.CommandType);
+        }
+
+        // Reset after recording: the gauges are observed concurrently and must not drop to zero
+        foreach (var key in QueuedCommandsByType.Keys.Where(key =>
+                     key.DataSourceName == datasourceName && !summaryCommandTypes.Contains(key.CommandType)))
         {
             QueuedCommandsByType[key] = 0;
         }
 
-        foreach (var key in MaxTryCountByType.Keys)
+        foreach (var key in MaxTryCountByType.Keys.Where(key =>
+                     key.DataSourceName == datasourceName && !summaryCommandTypes.Contains(key.CommandType)))
         {
             MaxTryCountByType[key] = 0;
-        }
-
-        foreach (var summaryEntry in summary)
-        {
-            QueuedCommandsByType[summaryEntry.CommandType] = summaryEntry.Count;
-            MaxTryCountByType[summaryEntry.CommandType] = summaryEntry.MaxTryCount;
         }
     }
 

@@ -1,16 +1,15 @@
 ﻿using System.Data;
-using LocalQueue.Storage;
 using LocalQueue.MySql;
+using LocalQueue.Storage;
 using MySqlConnector;
 using Testcontainers.MySql;
 
 namespace LocalQueue.Tests.Storage;
 
 [TestFixture]
-public class MySqlStorageTests : StorageTests
+public class MySqlLocalCommandsQueueStorageTests : StorageTests
 {
-    private readonly MySqlContainer _database = new MySqlBuilder()
-        .WithImage("mysql:8.0")
+    private readonly MySqlContainer _database = new MySqlBuilder("mysql:8.0")
         .WithName($"local-command-queue-test-mysql-{Guid.NewGuid().ToString().Replace("-", "")[..8]}")
         .WithDatabase($"mysqlstoragetest")
         .WithCommand("--sql_require_primary_key=ON")
@@ -37,12 +36,66 @@ public class MySqlStorageTests : StorageTests
         await _database.CreateLocalQueueCommandsTable(TableName);
     }
 
-    protected override ICommandsStorage CreateStorage()
+    [Test]
+    public void StoragesOfTheSameTableAreEqual()
     {
-        return new MySqlCommandStorage(new CommandStorageOptions
+        var storage = CreateWorkerStorage();
+        var sameTableStorage = CreateWorkerStorage();
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(storage, Is.EqualTo(sameTableStorage));
+            Assert.That(storage.GetHashCode(), Is.EqualTo(sameTableStorage.GetHashCode()));
+            var samePooledTableStorage = new MySqlLocalCommandsQueueWorkerStorage(
+                new MySqlLocalCommandsQueueWorkerStorageOptions
+                {
+                    TableName = TableName,
+                    ConnectionString = _database.GetConnectionString() + ";Pooling=false"
+                });
+            Assert.That(storage, Is.EqualTo(samePooledTableStorage));
+            Assert.That(storage.GetHashCode(), Is.EqualTo(samePooledTableStorage.GetHashCode()));
+            var database = new MySqlConnectionStringBuilder(_database.GetConnectionString()).Database;
+            foreach (var sameTableName in new[] { $"`{TableName}`", $"{database}.{TableName}", $"`{database}`.`{TableName}`" })
+            {
+                var sameTableNameStorage = new MySqlLocalCommandsQueueWorkerStorage(
+                    new MySqlLocalCommandsQueueWorkerStorageOptions
+                    {
+                        TableName = sameTableName,
+                        ConnectionString = _database.GetConnectionString()
+                    });
+                Assert.That(storage, Is.EqualTo(sameTableNameStorage), sameTableName);
+                Assert.That(storage.GetHashCode(), Is.EqualTo(sameTableNameStorage.GetHashCode()), sameTableName);
+            }
+
+            Assert.That(storage, Is.Not.EqualTo(new MySqlLocalCommandsQueueWorkerStorage(
+                new MySqlLocalCommandsQueueWorkerStorageOptions
+                {
+                    TableName = $"other_database.{TableName}",
+                    ConnectionString = _database.GetConnectionString()
+                })));
+            Assert.That(storage, Is.Not.EqualTo(new MySqlLocalCommandsQueueWorkerStorage(
+                new MySqlLocalCommandsQueueWorkerStorageOptions
+                {
+                    TableName = TableName,
+                    ConnectionString = _database.GetConnectionString() + ";Server=other-host"
+                })));
+        });
+    }
+
+    protected override ILocalCommandsQueueWorkerStorage CreateWorkerStorage()
+    {
+        return new MySqlLocalCommandsQueueWorkerStorage(new MySqlLocalCommandsQueueWorkerStorageOptions
         {
             TableName = TableName,
             ConnectionString = _database.GetConnectionString()
+        });
+    }
+
+    protected override ILocalCommandsQueueStorage CreateCommandsStorage()
+    {
+        return new MySqlLocalCommandsQueueStorage(new MySqlCommandQueueStorageOptions
+        {
+            TableName = TableName,
         });
     }
 

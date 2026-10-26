@@ -18,7 +18,8 @@ public static class MySqlContainerExtensions
                    CommandType varchar(250) not null,
                    CreatedAtUtc datetime not null,
                    LockedTillUtc datetime,
-                   TryCount int not null default(0)
+                   TryCount int not null default(0),
+                   index `CommandType_CreatedAtUtc_IDX` (`CommandType`, `CreatedAtUtc`)
                 );";
 
     #endregion

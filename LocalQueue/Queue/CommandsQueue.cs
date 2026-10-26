@@ -6,17 +6,23 @@ namespace LocalQueue.Queue;
 
 internal class CommandsQueue : ICommandsQueue
 {
-    private readonly ICommandsStorage _storage;
+    private readonly ILocalCommandsQueueStorage _storage;
     private readonly ICommandSerializer _serializer;
 
-    public CommandsQueue(ICommandsStorage storage, ICommandSerializer serializer)
+    public CommandsQueue(ILocalCommandsQueueStorage storage, ICommandSerializer serializer)
     {
         _storage = storage;
         _serializer = serializer;
     }
 
-    public async Task Enqueue<TCommand>(IDbConnection connection, IDbTransaction transaction,
+    public Task Enqueue<TCommand>(IDbConnection connection, IDbTransaction transaction,
         IEnumerable<TCommand> commands, CancellationToken ct) where TCommand : notnull
+    {
+        return Enqueue(connection, transaction, commands, null, ct);
+    }
+
+    public async Task Enqueue<TCommand>(IDbConnection connection, IDbTransaction transaction, IEnumerable<TCommand> commands,
+        DateTime? processingStartTime, CancellationToken ct) where TCommand : notnull
     {
         var toStore = commands
             .Select(c => new CommandRecord
@@ -24,7 +30,8 @@ internal class CommandsQueue : ICommandsQueue
                 Id = Guid.NewGuid(),
                 Data = _serializer.Serialize(c),
                 CommandType = c.GetType().FullName!,
-                CreatedAtUtc = DateTime.UtcNow
+                CreatedAtUtc = DateTime.UtcNow,
+                LockedTillUtc = processingStartTime
             })
             .ToList();
 

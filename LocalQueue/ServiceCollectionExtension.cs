@@ -1,4 +1,6 @@
 ﻿using LocalQueue.Queue;
+using LocalQueue.Serialization;
+using LocalQueue.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -11,7 +13,7 @@ namespace LocalQueue;
 public static class ServiceCollectionExtension
 {
     /// <summary>
-    /// Adds local command queue.
+    /// Adds local command queue. <see cref="ILocalCommandsQueueStorage"/> must be registered in DI./>
     /// </summary>
     /// <param name="serviceCollection">The <see cref="IServiceCollection"/> to add the services to.</param>
     /// <param name="configure">Action to configure command processing options. </param>
@@ -20,16 +22,12 @@ public static class ServiceCollectionExtension
     {
         var configurator = new LocalCommandQueueConfigurator();
         configure?.Invoke(configurator);
-        configurator.RegisterSerializers(serviceCollection);
-
-        serviceCollection.TryAddSingleton<CommandsQueue>();
-        serviceCollection.TryAddSingleton<ICommandsQueue>(sp => sp.GetRequiredService<CommandsQueue>());
-
+        configurator.RegisterCommandQueue(serviceCollection);
         return serviceCollection;
     }
 
     /// <summary>
-    /// Adds local command handlers.
+    /// Adds local command handlers. <see cref="ILocalCommandsQueueWorkerStorage"/> must be registered in DI.
     /// </summary>
     /// <param name="serviceCollection">The <see cref="IServiceCollection"/> to add the services to.</param>
     /// <param name="configuration">Configuration section command processing options <see cref="LocalCommandQueueWorkerConfigurator"/></param>
@@ -44,7 +42,7 @@ public static class ServiceCollectionExtension
     }
 
     /// <summary>
-    /// Adds local command handlers.
+    /// Adds local command handlers. <see cref="ILocalCommandsQueueWorkerStorage"/> must be registered in DI.
     /// </summary>
     /// <param name="serviceCollection">The <see cref="IServiceCollection"/> to add the services to.</param>
     /// <param name="configure">Action to configure command processing options. </param>
@@ -54,19 +52,12 @@ public static class ServiceCollectionExtension
         return serviceCollection.AddLocalCommandQueueWorker(new LocalCommandQueueWorkerConfigurator(), configure);
     }
 
-    /// <summary>
-    /// Adds local command handlers.
-    /// </summary>
-    /// <param name="serviceCollection">The <see cref="IServiceCollection"/> to add the services to.</param>
-    /// <param name="options">Already configured <see cref="LocalCommandQueueWorkerConfigurator"/></param>
-    /// <param name="configure">Action to configure command processing options. </param>
-    public static IServiceCollection AddLocalCommandQueueWorker(this IServiceCollection serviceCollection,
+    internal static IServiceCollection AddLocalCommandQueueWorker(this IServiceCollection serviceCollection,
         LocalCommandQueueWorkerConfigurator options,
         Action<LocalCommandQueueWorkerConfigurator>? configure = null)
     {
         configure?.Invoke(options);
-        options.RegisterHandlers(serviceCollection);
-        options.RegisterSerializers(serviceCollection);
+        options.RegisterWorker(serviceCollection);
         return serviceCollection;
     }
 }

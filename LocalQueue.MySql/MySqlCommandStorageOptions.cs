@@ -1,15 +1,10 @@
-namespace LocalQueue;
+namespace LocalQueue.MySql;
 
 /// <summary>
-/// Options to setup local commands storage.
+/// Options to setup MySql local commands storage.
 /// </summary>
-public class CommandStorageOptions
+public class MySqlCommandQueueStorageOptions
 {
-    /// <summary>
-    /// Connection string used for local commands storage.
-    /// </summary>
-    public string ConnectionString { get; set; } = null!;
-
     /// <summary>
     /// Local commands storage table name.
     /// </summary>
@@ -23,7 +18,7 @@ public class CommandStorageOptions
     public int InsertBatchSize { get; set; } = 100;
 
     /// <summary>
-    /// Maximum time before terminating the attempt to execute a command and generating an error.
+    /// Maximum time before terminating the attempt to execute a MySql command and generating an error.
     /// </summary>
     /// <remarks> Default is 5 seconds.</remarks>
     public int CommandTimeoutSeconds { get; set; } = 5;
