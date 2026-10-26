@@ -1,17 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
     <PropertyGroup>
-        <TargetFramework>net9.0</TargetFramework>
-        <ImplicitUsings>enable</ImplicitUsings>
-        <Nullable>enable</Nullable>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="MySqlConnector" Version="2.4.0" />
+        <ProjectReference Include="..\LocalQueue\LocalQueue.csproj"/>
     </ItemGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\LocalQueue\LocalQueue.csproj" />
+        <PackageReference Include="MySqlConnector" Version="2.4.0" />
     </ItemGroup>
-
 </Project>
