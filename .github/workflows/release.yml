@@ -4,7 +4,7 @@ on:
   release:
     types: [published]
 env:
-  DOTNET_VERSION: "9.0.x"
+  DOTNET_VERSION: "10.0.x"
 
 jobs:
   Check:
@@ -12,7 +12,7 @@ jobs:
     outputs: 
       package-version: ${{ steps.package-version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.release.ref }}
       
@@ -32,12 +32,12 @@ jobs:
 #      id-token: write # to enable use of OIDC for npm provenance
       packages: write # for pushing GitHub Nuget packages
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
 
-      - name: Setup .NET Core SDK 9.0.4
-        uses: actions/setup-dotnet@v4
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 

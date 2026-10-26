@@ -1,5 +1,3 @@
-using LocalQueue.RetryPolicy;
-
 namespace LocalQueue.Processing;
 
 /// <summary>
@@ -30,5 +28,5 @@ public class CommandProcessingOptions
     /// </summary>
     public TimeSpan IdleTimeout { get; set; } = TimeSpan.FromSeconds(3);
 
-    internal Dictionary<string, RetryPolicyOptions> RetryOptions { get; set; } = new();
+    internal Dictionary<string, ICommandRetryPolicy> RetryOptions { get; set; } = new();
 }

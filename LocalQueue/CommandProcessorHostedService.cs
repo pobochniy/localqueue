@@ -5,21 +5,16 @@ namespace LocalQueue;
 
 internal class CommandProcessorHostedService : BackgroundService
 {
-    private readonly CommandProcessor _commandProcessor;
-    private readonly CommandProcessingOptions _options;
+    private readonly IEnumerable<CommandProcessor> _commandProcessors;
 
-    public CommandProcessorHostedService(
-        CommandProcessor commandProcessor,
-        CommandProcessingOptions options)
+    public CommandProcessorHostedService(IEnumerable<CommandProcessor> commandProcessors)
     {
-        _commandProcessor = commandProcessor;
-        _options = options;
+        _commandProcessors = commandProcessors;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        return Task.WhenAll(Enumerable.Range(0, _options.WorkersCount)
-            .Select(_ =>
-                Task.Run(async () => { await _commandProcessor.ExecuteAsync(stoppingToken); }, stoppingToken)));
+        return Task.WhenAll(_commandProcessors
+            .Select(commandProcessor => Task.Run(() => commandProcessor.Run(stoppingToken), stoppingToken)));
     }
 }

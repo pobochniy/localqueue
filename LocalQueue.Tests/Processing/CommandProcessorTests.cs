@@ -65,7 +65,7 @@ public class CommandProcessorTests
     public CommandProcessorTests()
     {
         _handler = new TestHandler();
-        var storage = new Mock<ICommandsStorage>();
+        var storage = new Mock<ILocalCommandsQueueWorkerStorage>();
 
         var scopeFactory = new ServiceScopeFactoryFake();
         scopeFactory.SetService<ICommandHandler<TestCommand>>(_handler);
@@ -75,13 +75,16 @@ public class CommandProcessorTests
 
         var rawHandler = new RawCommandHandler<TestCommand>(
             new CommandProcessingOptions(),
+            _ => storage.Object,
+            (_, command, ct) => _handler.Handle(command, ct),
             scopeFactory,
             new JsonCommandSerializer(new JsonSerializerOptions()),
             Logger<RawCommandHandler<TestCommand>>());
 
         _sut = new CommandProcessor(
+            new CommandProcessingOptions(),
             _fetchChannel,
-            new[] { rawHandler },
+            [rawHandler],
             Logger<CommandProcessor>());
     }
 
@@ -111,7 +114,7 @@ public class CommandProcessorTests
         };
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            new CommandProcessor(_fetchChannel, handlers, Logger<CommandProcessor>()));
+            new CommandProcessor(options, _fetchChannel, handlers, Logger<CommandProcessor>()));
 
         Assert.That(exception, Is.Not.Null);
         Assert.That(exception!.Message,
@@ -120,25 +123,28 @@ public class CommandProcessorTests
 
         RawCommandHandler<TCommand> GenerateHandler<TCommand>()
         {
-            return new RawCommandHandler<TCommand>(options, factoryMock.Object, 
+            return new RawCommandHandler<TCommand>(options,
+                _ => Mock.Of<ILocalCommandsQueueWorkerStorage>(),
+                (_, _, _) => Task.CompletedTask,
+                factoryMock.Object, 
                 new JsonCommandSerializer(new JsonSerializerOptions()), Logger<RawCommandHandler<TCommand>>());
         }
     }
 
-    [Test, Timeout(3_000)]
+    [Test, CancelAfter(3_000)]
     public async Task ShouldProcessCommand()
     {
         var command = new TestCommand();
         var record = command.ToCommandRecord();
         await _fetchChannel.Writer.WriteAsync(record, CancellationToken.None);
 
-        _ = _sut.ExecuteAsync(CancellationToken.None);
+        _ = _sut.Run(CancellationToken.None);
 
         await _handler.WaitCommandHandled(command);
         Assert.Pass();
     }
 
-    [Test, Timeout(3_000)]
+    [Test, CancelAfter(3_000)]
     public async Task ShouldNotProcessCommand_IfHandlerNotFound()
     {
         var sickCommand = new
@@ -162,7 +168,7 @@ public class CommandProcessorTests
         await _fetchChannel.Writer.WriteAsync(sickRecord, CancellationToken.None);
         await _fetchChannel.Writer.WriteAsync(healthyRecord, CancellationToken.None);
 
-        _ = _sut.ExecuteAsync(CancellationToken.None);
+        _ = _sut.Run(CancellationToken.None);
 
         await _handler.WaitCommandHandled(healthyCommand);
         Assert.Pass();

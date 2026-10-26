@@ -13,7 +13,7 @@ public class CommandsQueueTests
 {
     private readonly Mock<IDbConnection> _connection;
     private readonly Mock<IDbTransaction> _transaction;
-    private readonly Mock<ICommandsStorage> _storage;
+    private readonly Mock<ILocalCommandsQueueStorage> _storage;
     private readonly CommandsQueue _sut;
 
     // ReSharper disable UnusedAutoPropertyAccessor.Local
@@ -108,6 +108,37 @@ public class CommandsQueueTests
         Assert.That(actualRecord.CommandType, Is.EqualTo(typeof(TestCommand).FullName!));
         Assert.That(actualRecord.CreatedAtUtc, Is.EqualTo(DateTime.UtcNow).Within(5).Seconds);
         Assert.That(actualRecord.LockedTillUtc, Is.Null);
+        Assert.That(actualRecord.TryCount, Is.EqualTo(0));
+    }
+    
+    [Test]
+    public async Task ShouldCreateRecordWithValidPropertiesWhenEnqueuedWithInitialLock()
+    {
+        var command = TestCommand.Create();
+        var initialCommandLock = DateTime.UtcNow.AddMinutes(1);
+        CommandRecord[]? actualRecords = null;
+
+        _storage
+            .Setup(s => s.Create(
+                It.IsAny<IDbConnection>(),
+                It.IsAny<IDbTransaction>(),
+                It.IsAny<IEnumerable<CommandRecord>>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<IDbConnection, IDbTransaction, IEnumerable<CommandRecord>, CancellationToken>((_, _, r, _) =>
+            {
+                actualRecords = r.ToArray();
+            });
+
+        await _sut.Enqueue(_connection.Object, _transaction.Object, [command], initialCommandLock, CancellationToken.None);
+
+        Assert.That(actualRecords, Has.Length.EqualTo(1));
+        var actualRecord = actualRecords![0];
+
+        Assert.That(actualRecord.Id, Is.Not.EqualTo(Guid.Empty));
+        Assert.That(actualRecord.Data, Is.EqualTo(JsonSerializer.Serialize(command)));
+        Assert.That(actualRecord.CommandType, Is.EqualTo(typeof(TestCommand).FullName!));
+        Assert.That(actualRecord.CreatedAtUtc, Is.EqualTo(DateTime.UtcNow).Within(5).Seconds);
+        Assert.That(actualRecord.LockedTillUtc, Is.EqualTo(initialCommandLock));
         Assert.That(actualRecord.TryCount, Is.EqualTo(0));
     }
 }

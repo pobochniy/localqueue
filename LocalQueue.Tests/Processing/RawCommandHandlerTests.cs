@@ -14,9 +14,9 @@ namespace LocalQueue.Tests.Processing;
 [FixtureLifeCycle(LifeCycle.InstancePerTestCase)]
 public class RawCommandHandlerTests
 {
-    private readonly Mock<ICommandsStorage> _storage;
-    private readonly RawCommandHandler<TestCtsCommand> _sut;
+    private readonly Mock<ILocalCommandsQueueWorkerStorage> _storage;
     private readonly TestCtsHandler _handler;
+    private readonly ServiceScopeFactoryFake _scopeFactory;
 
     private class TestCtsCommand
     {
@@ -36,6 +36,19 @@ public class RawCommandHandlerTests
                 TryCount = 0,
                 CreatedAtUtc = createdAtUtc,
                 LockedTillUtc = lockedTill
+            };
+        }
+
+        public CommandRecord ToCommandRecord(int tryCount)
+        {
+            return new CommandRecord
+            {
+                Id = Id,
+                Data = JsonSerializer.Serialize(this),
+                CommandType = typeof(TestCtsCommand).FullName!,
+                TryCount = tryCount,
+                CreatedAtUtc = DateTime.UtcNow,
+                LockedTillUtc = DateTime.UtcNow.AddMinutes(5)
             };
         }
     }
@@ -66,23 +79,28 @@ public class RawCommandHandlerTests
     public RawCommandHandlerTests()
     {
         _handler = new TestCtsHandler();
-        _storage = new Mock<ICommandsStorage>();
+        _storage = new Mock<ILocalCommandsQueueWorkerStorage>();
 
-        var scopeFactory = new ServiceScopeFactoryFake();
-        scopeFactory.SetService<ICommandHandler<TestCtsCommand>>(_handler);
-        scopeFactory.SetService(_storage.Object);
+        _scopeFactory = new ServiceScopeFactoryFake();
+        _scopeFactory.SetService<ICommandHandler<TestCtsCommand>>(_handler);
+        _scopeFactory.SetService(_storage.Object);
+    }
 
-        var logger = new NullLoggerFactory()
-            .CreateLogger<RawCommandHandler<TestCtsCommand>>();
-
-        var commandProcessingOptions = new CommandProcessingOptions()
+    private RawCommandHandler<TestCtsCommand> Sut(Action<CommandProcessingOptions>? configure = null)
+    {
+        var options = new CommandProcessingOptions()
             .WithBackoffIntervalFor<TestCtsCommand>(TimeSpan.FromMilliseconds(50));
-        
-        _sut = new RawCommandHandler<TestCtsCommand>(
-            commandProcessingOptions,
-            scopeFactory,
+
+        configure?.Invoke(options);
+
+        return new RawCommandHandler<TestCtsCommand>(
+            options,
+            sp => _storage.Object,
+            (_, command, ct) => _handler.Handle(command, ct),
+            _scopeFactory,
             new JsonCommandSerializer(new JsonSerializerOptions()),
-            logger);
+            new NullLoggerFactory()
+                .CreateLogger<RawCommandHandler<TestCtsCommand>>());
     }
 
     [Test]
@@ -90,7 +108,7 @@ public class RawCommandHandlerTests
     {
         var command = new TestCtsCommand();
 
-        await _sut.Handle(command.ToCommandRecord(), CancellationToken.None);
+        await Sut().Handle(command.ToCommandRecord(), CancellationToken.None);
 
         Assert.That(_handler.Processed.Count, Is.EqualTo(1));
         Assert.That(_handler.Processed.Single().Id, Is.EqualTo(command.Id));
@@ -104,10 +122,11 @@ public class RawCommandHandlerTests
         var skipContext = toSkip.ToCommandRecord(DateTime.UtcNow.AddMinutes(-10),
             DateTime.UtcNow.AddMinutes(-5));
 
-        await _sut.Handle(skipContext, CancellationToken.None);
+        await Sut().Handle(skipContext, CancellationToken.None);
 
         Assert.That(_handler.Processed, Has.Count.EqualTo(0));
         AssertDeleteCalled(skipContext.Id, Times.Never);
+        AssertMakeInvisibleForNeverCalled(skipContext.Id);
     }
 
     [Test]
@@ -115,9 +134,10 @@ public class RawCommandHandlerTests
     {
         var command = new TestCtsCommand();
 
-        await _sut.Handle(command.ToCommandRecord(), CancellationToken.None);
+        await Sut().Handle(command.ToCommandRecord(), CancellationToken.None);
 
         AssertDeleteCalled(command.Id, Times.Once);
+        AssertMakeInvisibleForNeverCalled(command.Id);
     }
 
     [Test]
@@ -135,10 +155,159 @@ public class RawCommandHandlerTests
             return Task.CompletedTask;
         };
 
-        await _sut.Handle(failingCommand.ToCommandRecord(), CancellationToken.None);
+        await Sut().Handle(failingCommand.ToCommandRecord(), CancellationToken.None);
 
         Assert.That(_handler.StartedProcessing[failingCommand.Id], Is.EqualTo(3));
         AssertDeleteCalled(failingCommand.Id, Times.Never);
+    }
+
+    [Test]
+    public async Task ShouldMakeCommandInvisibleAfterFailure_IfRetryAfterFailureOptionIsSpecified()
+    {
+        var failingCommand = new TestCtsCommand();
+        var failingCommandRecord = failingCommand.ToCommandRecord();
+        var timeout = TimeSpan.FromSeconds(123);
+
+        _handler.HandleCallback = c =>
+        {
+            if (c.Id == failingCommandRecord.Id)
+            {
+                throw new InvalidOperationException($"Throw test exception for command {c.Id}");
+            }
+            return Task.CompletedTask;
+        };
+
+        var sut = Sut(c =>
+        {
+            c.WithRetryAfterFailure<TestCtsCommand>(timeout);
+        });
+
+        await sut.Handle(failingCommand.ToCommandRecord(), CancellationToken.None);
+
+        AssertDeleteCalled(failingCommand.Id, Times.Never);
+        AssertMakeInvisibleForCalledOnce(failingCommand.Id, timeout);
+    }
+    
+    [Test]
+    public async Task ShouldNotMakeCommandInvisibleAfterFailure_WithoutRetryAfterFailureOption()
+    {
+        var failingCommand = new TestCtsCommand();
+        var failingCommandRecord = failingCommand.ToCommandRecord();
+
+        _handler.HandleCallback = c =>
+        {
+            if (c.Id == failingCommandRecord.Id)
+            {
+                throw new InvalidOperationException($"Throw test exception for command {c.Id}");
+            }
+            return Task.CompletedTask;
+        };
+
+        var sut = Sut(c =>
+        {
+            c.WithoutRetryAfterFailure<TestCtsCommand>();
+        });
+
+        await sut.Handle(failingCommand.ToCommandRecord(), CancellationToken.None);
+
+        AssertDeleteCalled(failingCommand.Id, Times.Never);
+        AssertMakeInvisibleForNeverCalled(failingCommand.Id);
+    }
+
+    private class AttemptAwareRetryPolicy : ICommandRetryPolicy
+    {
+        public int MaxRetryCount => 1;
+        public TimeSpan BackoffFor(int retry) => TimeSpan.Zero;
+        public TimeSpan? RedeliverAfter(int attempt) => TimeSpan.FromSeconds(attempt * 10);
+    }
+
+    [Test]
+    public async Task ShouldMakeCommandInvisibleForTheAttemptDependentDelay_WhenPolicyComputesIt()
+    {
+        var failingCommand = new TestCtsCommand();
+
+        _handler.HandleCallback = c => throw new InvalidOperationException($"Throw test exception for command {c.Id}");
+
+        var sut = Sut(c => c.RetryOptions[typeof(TestCtsCommand).FullName!] = new AttemptAwareRetryPolicy());
+
+        await sut.Handle(failingCommand.ToCommandRecord(tryCount: 4), CancellationToken.None);
+
+        AssertDeleteCalled(failingCommand.Id, Times.Never);
+        AssertMakeInvisibleForCalledOnce(failingCommand.Id, TimeSpan.FromSeconds(40));
+    }
+
+    private class BackoffRecordingRetryPolicy : ICommandRetryPolicy
+    {
+        public BackoffRecordingRetryPolicy(int maxRetryCount = 3) => MaxRetryCount = maxRetryCount;
+
+        public List<int> Requested { get; } = new();
+
+        public int MaxRetryCount { get; }
+
+        public TimeSpan BackoffFor(int retry)
+        {
+            Requested.Add(retry);
+            return TimeSpan.Zero;
+        }
+
+        public TimeSpan? RedeliverAfter(int attempt) => TimeSpan.FromSeconds(1);
+    }
+
+    [Test]
+    public async Task ShouldNotBackoffAfterTheLastTry()
+    {
+        var failingCommand = new TestCtsCommand();
+        var retryPolicy = new BackoffRecordingRetryPolicy();
+
+        _handler.HandleCallback = c => throw new InvalidOperationException($"Throw test exception for command {c.Id}");
+
+        var sut = Sut(c => c.RetryOptions[typeof(TestCtsCommand).FullName!] = retryPolicy);
+
+        await sut.Handle(failingCommand.ToCommandRecord(), CancellationToken.None);
+
+        Assert.That(_handler.StartedProcessing[failingCommand.Id], Is.EqualTo(3));
+        Assert.That(retryPolicy.Requested, Is.EqualTo(new[] { 1, 2 }));
+    }
+
+    [Test]
+    public async Task ShouldStopRetrying_WhenTrySucceeds()
+    {
+        var command = new TestCtsCommand();
+        var retryPolicy = new BackoffRecordingRetryPolicy();
+
+        _handler.HandleCallback = c =>
+        {
+            if (_handler.StartedProcessing[c.Id] == 1)
+            {
+                throw new InvalidOperationException($"Throw test exception for command {c.Id}");
+            }
+            return Task.CompletedTask;
+        };
+
+        var sut = Sut(c => c.RetryOptions[typeof(TestCtsCommand).FullName!] = retryPolicy);
+
+        await sut.Handle(command.ToCommandRecord(), CancellationToken.None);
+
+        Assert.That(_handler.StartedProcessing[command.Id], Is.EqualTo(2));
+        Assert.That(retryPolicy.Requested, Is.EqualTo(new[] { 1 }));
+        AssertDeleteCalled(command.Id, Times.Once);
+        AssertMakeInvisibleForNeverCalled(command.Id);
+    }
+
+    [Test]
+    public async Task ShouldNotTryAtAll_WhenMaxRetryCountIsZero()
+    {
+        var command = new TestCtsCommand();
+        var retryPolicy = new BackoffRecordingRetryPolicy(0);
+
+        var sut = Sut(c => c.RetryOptions[typeof(TestCtsCommand).FullName!] = retryPolicy);
+
+        await sut.Handle(command.ToCommandRecord(), CancellationToken.None);
+
+        Assert.That(_handler.StartedProcessing, Is.Empty);
+        Assert.That(retryPolicy.Requested, Is.Empty);
+        AssertDeleteCalled(command.Id, Times.Never);
+        AssertMakeInvisibleForCalledOnce(command.Id, TimeSpan.FromSeconds(1));
     }
 
     [Test]
@@ -159,7 +328,7 @@ public class RawCommandHandlerTests
             throw new InvalidOperationException($"Throw test exception for command {c.Id}");
         };
 
-        await _sut.Handle(context, cts.Token);
+        await Sut().Handle(context, cts.Token);
 
         Assert.That(_handler.StartedProcessing[context.Id], Is.EqualTo(2));
     }
@@ -178,15 +347,28 @@ public class RawCommandHandlerTests
             }
         };
 
-        await _sut.Handle(lockedContext, CancellationToken.None);
+        await Sut().Handle(lockedContext, CancellationToken.None);
 
         Assert.That(_handler.StartedProcessing[lockedContext.Id], Is.EqualTo(1));
         AssertDeleteCalled(lockedContext.Id, Times.Never);
+        AssertMakeInvisibleForNeverCalled(lockedContext.Id);
     }
 
     private void AssertDeleteCalled(Guid commandId, Func<Times> times)
     {
         _storage.Verify<Task>(
             s => s.Delete(commandId, It.IsAny<CancellationToken>()), times);
+    }
+
+    private void AssertMakeInvisibleForNeverCalled(Guid commandId)
+    {
+        _storage.Verify<Task>(
+            s => s.MakeInvisibleFor(commandId, It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private void AssertMakeInvisibleForCalledOnce(Guid commandId, TimeSpan timeout)
+    {
+        _storage.Verify<Task>(
+            s => s.MakeInvisibleFor(commandId, timeout, It.IsAny<CancellationToken>()), Times.Once);
     }
 }

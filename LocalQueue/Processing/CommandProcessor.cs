@@ -8,17 +8,26 @@ namespace LocalQueue.Processing;
 internal class CommandProcessor
 {
     private readonly ChannelReader<CommandRecord> _fetchReader;
+    private readonly CommandProcessingOptions _options;
     private readonly ILogger<CommandProcessor> _logger;
     private readonly IEnumerable<IRawCommandHandler> _commandHandlers;
 
     public CommandProcessor(
+        CommandProcessingOptions options,
         FetchCommandChannel fetchChannel,
         IEnumerable<IRawCommandHandler> commandHandlers,
         ILogger<CommandProcessor> logger)
     {
         _fetchReader = fetchChannel.Reader;
-        _commandHandlers = PrepareHandlers(commandHandlers);
+        _options = options;
         _logger = logger;
+        _commandHandlers = PrepareHandlers(commandHandlers);
+    }
+
+    public Task Run(CancellationToken ct)
+    {
+        return Task.WhenAll(Enumerable.Range(0, _options.WorkersCount)
+            .Select(_ => Task.Run(() => ExecuteAsync(ct), ct)));
     }
 
     private static IReadOnlyCollection<IRawCommandHandler> PrepareHandlers(IEnumerable<IRawCommandHandler> handlers)
@@ -37,7 +46,7 @@ internal class CommandProcessor
             $"Handlers must not contain duplicates. Duplicates: {string.Join(",", duplicates)}");
     }
 
-    public async Task ExecuteAsync(CancellationToken ct)
+    private async Task ExecuteAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -63,7 +72,7 @@ internal class CommandProcessor
         var handler = _commandHandlers.SingleOrDefault(x => x.CanHandle(commandRecord));
         if (handler == null)
         {
-            _logger.LogError("Command handler for {Type} not found.", commandRecord.CommandType);
+            _logger.LogError("Storage returned command of type {Type} that was not requested.", commandRecord.CommandType);
             return;
         }
         await handler.Handle(commandRecord, ct);
