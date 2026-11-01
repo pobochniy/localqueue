@@ -9,7 +9,7 @@ namespace LocalQueue.Tests.Storage;
 [TestFixture]
 public class MySqlLocalCommandsQueueStorageTests : StorageTests
 {
-    private readonly MySqlContainer _database = new MySqlBuilder("mysql:8.0")
+    private readonly MySqlContainer _database = new MySqlBuilder("mysql:8.4")
         .WithName($"local-command-queue-test-mysql-{Guid.NewGuid().ToString().Replace("-", "")[..8]}")
         .WithDatabase($"mysqlstoragetest")
         .WithCommand("--sql_require_primary_key=ON")

@@ -179,7 +179,7 @@ public class MySqlEndToEndTests : EndToEndTests
 {
     private readonly MySqlContainer[] _databases = [BuildContainer(), BuildContainer()];
 
-    private static MySqlContainer BuildContainer() => new MySqlBuilder("mysql:8.0")
+    private static MySqlContainer BuildContainer() => new MySqlBuilder("mysql:8.4")
         .WithName($"local-command-queue-test-mysql-{Guid.NewGuid().ToString().Replace("-", "")[..8]}")
         .WithDatabase("endtoend")
         .WithCommand("--sql_require_primary_key=ON")
