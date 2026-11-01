@@ -3,3 +3,8 @@ obj/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/
+# OS and personal IDE files
+.DS_Store
+*.DotSettings.user
+.idea/**/workspace.xml
+.idea/**/contentModel.xml

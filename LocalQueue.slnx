@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path="nuget.config" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/Solution Items/workflows/">
+    <File Path=".github/workflows/default.yml" />
+    <File Path=".github/workflows/release.yml" />
+  </Folder>
+  <Project Path="LocalQueue/LocalQueue.csproj" />
+  <Project Path="LocalQueue.MySql/LocalQueue.MySql.csproj" />
+  <Project Path="LocalQueue.OpenTelemetry/LocalQueue.OpenTelemetry.csproj" />
+  <Project Path="LocalQueue.PostgreSql/LocalQueue.PostgreSql.csproj" />
+  <Project Path="LocalQueue.Tests/LocalQueue.Tests.csproj" />
+</Solution>
