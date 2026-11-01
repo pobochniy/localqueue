@@ -17,8 +17,10 @@
         <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.15.3-beta.1" />
         <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
         <PackageReference Include="Testcontainers" Version="4.14.0"/>
+        <PackageReference Include="Testcontainers.PostgreSql" Version="4.14.0"/>
         <PackageReference Include="Testcontainers.MySql" Version="4.14.0"/>
-        <PackageReference Include="MySqlConnector" Version="2.4.0" />
+        <PackageReference Include="MySqlConnector" Version="2.6.2" />
+        <PackageReference Include="Npgsql" Version="10.0.0" />
     </ItemGroup>
 
     <ItemGroup>
@@ -26,6 +28,7 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\LocalQueue.PostgreSql\LocalQueue.PostgreSql.csproj"/>
         <ProjectReference Include="..\LocalQueue.MySql\LocalQueue.MySql.csproj"/>
         <ProjectReference Include="..\LocalQueue.OpenTelemetry\LocalQueue.OpenTelemetry.csproj" />
         <ProjectReference Include="..\LocalQueue\LocalQueue.csproj"/>

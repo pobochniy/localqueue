@@ -4,4 +4,5 @@ using System.Runtime.CompilerServices;
 // integration tests less end to end
 
 [assembly: InternalsVisibleTo("LocalQueue.MySql")]
+[assembly: InternalsVisibleTo("LocalQueue.PostgreSql")]
 [assembly: InternalsVisibleTo("LocalQueue.Tests")]

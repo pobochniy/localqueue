@@ -1,13 +1,13 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-
+<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <!-- a draft, its code is commented out -->
-        <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
-        <NoWarn>$(NoWarn);S125</NoWarn>
+        <GenerateDocumentationFile>true</GenerateDocumentationFile>
     </PropertyGroup>
 
     <ItemGroup>
-      <ProjectReference Include="..\LocalQueue\LocalQueue.csproj" />
+        <ProjectReference Include="..\LocalQueue\LocalQueue.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="Npgsql" Version="10.0.0" />
+    </ItemGroup>
 </Project>

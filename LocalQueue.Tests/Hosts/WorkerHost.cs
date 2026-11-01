@@ -1,4 +1,3 @@
-using LocalQueue.MySql;
 using LocalQueue.OpenTelemetry;
 using LocalQueue.RetryPolicy;
 using Microsoft.AspNetCore.Builder;
@@ -10,14 +9,18 @@ using OpenTelemetry.Metrics;
 
 namespace LocalQueue.Tests.Hosts;
 
+public delegate void UseWorkerStorage(LocalCommandQueueWorkerConfigurator configurator, string connectionString,
+    string tableName);
+
 /// <summary>
 /// Test server with the workers registered by <c>configureWorkers</c> and the metrics endpoint.
+/// <c>useStorage</c> sets the worker storage for a connection string and a table.
 /// </summary>
-public sealed class MySqlWorkerHost : IDisposable
+public sealed class WorkerHost : IDisposable
 {
     private readonly IHost _host;
 
-    private MySqlWorkerHost(Action<IServiceCollection> configureWorkers)
+    private WorkerHost(Action<IServiceCollection> configureWorkers)
     {
         _host = new HostBuilder()
             .ConfigureWebHost(webBuilder =>
@@ -45,44 +48,32 @@ public sealed class MySqlWorkerHost : IDisposable
             .Build();
     }
 
-    public static MySqlWorkerHost Minimal(string mysqlConnectionString, string localCommandsQueueTableName)
+    public static WorkerHost Minimal(UseWorkerStorage useStorage, string connectionString, string localCommandsQueueTableName)
     {
-        return new MySqlWorkerHost(services => services
+        return new WorkerHost(services => services
             .AddSingleton<LocalCommandHandler>()
             .AddLocalCommandQueueWorker(c =>
             {
-                c.UseMySqlStorage(options =>
-                {
-                    options.ConnectionString = mysqlConnectionString;
-                    options.TableName = localCommandsQueueTableName;
-                });
+                useStorage(c, connectionString, localCommandsQueueTableName);
                 c.PrefetchCount = 1;
                 c.AddCommandHandler<LocalCommand, LocalCommandHandler>(new RetryPolicyOptions { MaxRetryCount = 3 });
             }));
     }
 
-    public static MySqlWorkerHost TwoDatabases(string mysqlConnectionString1, string localCommandsQueueTableName1,
-        string mysqlConnectionString2, string localCommandsQueueTableName2)
+    public static WorkerHost TwoDatabases(UseWorkerStorage useStorage, string connectionString1, string localCommandsQueueTableName1,
+        string connectionString2, string localCommandsQueueTableName2)
     {
-        return new MySqlWorkerHost(services => services
+        return new WorkerHost(services => services
             .AddSingleton<LocalCommandHandler>()
             .AddLocalCommandQueueWorker(c =>
             {
-                c.UseMySqlStorage(options =>
-                {
-                    options.ConnectionString = mysqlConnectionString1;
-                    options.TableName = localCommandsQueueTableName1;
-                });
+                useStorage(c, connectionString1, localCommandsQueueTableName1);
                 c.PrefetchCount = 1;
                 c.AddCommandHandler<LocalCommand, LocalCommandHandler>(new RetryPolicyOptions { MaxRetryCount = 3 });
             })
             .AddLocalCommandQueueWorker(c =>
             {
-                c.UseMySqlStorage(options =>
-                {
-                    options.ConnectionString = mysqlConnectionString2;
-                    options.TableName = localCommandsQueueTableName2;
-                });
+                useStorage(c, connectionString2, localCommandsQueueTableName2);
                 c.PrefetchCount = 1;
                 c.AddCommandHandler<LocalCommand, LocalCommandHandler>(new RetryPolicyOptions { MaxRetryCount = 3 });
             }));
@@ -91,30 +82,22 @@ public sealed class MySqlWorkerHost : IDisposable
     /// <summary>
     /// Two workers on one table, each with its own command type and processing options.
     /// </summary>
-    public static MySqlWorkerHost TwoWorkersOneTable(string mysqlConnectionString, string localCommandsQueueTableName,
+    public static WorkerHost TwoWorkersOneTable(UseWorkerStorage useStorage, string connectionString, string localCommandsQueueTableName,
         TimeSpan invisibilityTimeout)
     {
-        return new MySqlWorkerHost(services => services
+        return new WorkerHost(services => services
             .AddSingleton<LocalCommandHandler>()
             .AddSingleton<OtherLocalCommandHandler>()
             .AddLocalCommandQueueWorker(c =>
             {
-                c.UseMySqlStorage(options =>
-                {
-                    options.ConnectionString = mysqlConnectionString;
-                    options.TableName = localCommandsQueueTableName;
-                });
+                useStorage(c, connectionString, localCommandsQueueTableName);
                 c.PrefetchCount = 1;
                 c.InvisibilityTimeout = invisibilityTimeout;
                 c.AddCommandHandler<LocalCommand, LocalCommandHandler>();
             })
             .AddLocalCommandQueueWorker(c =>
             {
-                c.UseMySqlStorage(options =>
-                {
-                    options.ConnectionString = mysqlConnectionString;
-                    options.TableName = localCommandsQueueTableName;
-                });
+                useStorage(c, connectionString, localCommandsQueueTableName);
                 c.PrefetchCount = 1;
                 c.InvisibilityTimeout = invisibilityTimeout;
                 c.AddCommandHandler<OtherLocalCommand, OtherLocalCommandHandler>();

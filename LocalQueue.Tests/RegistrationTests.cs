@@ -15,7 +15,7 @@ using Moq;
 
 namespace LocalQueue.Tests;
 
-public class RegistrationTests
+public partial class RegistrationTests
 {
     [Test]
     public void CanRegisterCommandQueue()
@@ -577,7 +577,7 @@ public static class ServiceProviderAssertionExtension
             .SingleOrDefault(x => x.CommandType == typeof(TCommand).FullName);
     }
 
-    private static IRawCommandHandler GetCommandHandler(this IServiceProvider serviceProvider)
+    internal static IRawCommandHandler GetCommandHandler(this IServiceProvider serviceProvider)
     {
         var commandProcessors = GetCommandProcessors(serviceProvider);
         var rawCommandHandlers = commandProcessors
@@ -764,7 +764,7 @@ public static class ConfigurationBuilderExtensions
         return (JsonSerializerOptions)optionsField.GetValue(serializer)!;
     }
 
-    private static string WithPrefix(this string key, string? prefix = null) => !string.IsNullOrEmpty(prefix)
+    internal static string WithPrefix(this string key, string? prefix = null) => !string.IsNullOrEmpty(prefix)
         ? $"{prefix}:{key}"
         : key;
 }
