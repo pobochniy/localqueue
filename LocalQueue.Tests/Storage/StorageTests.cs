@@ -146,11 +146,11 @@ public abstract class StorageTests
     }
 
     [Test]
-    public void CannotPrefetchWithoutCommandTypes()
+    public async Task CannotPrefetchWithoutCommandTypes()
     {
         var workerStorage = CreateWorkerStorage();
 
-        Assert.ThrowsAsync<ArgumentException>(() =>
+        await Assert.ThrowsAsync<ArgumentException>(() =>
             workerStorage.Prefetch(1, TimeSpan.FromMinutes(1), [], CancellationToken.None));
     }
 

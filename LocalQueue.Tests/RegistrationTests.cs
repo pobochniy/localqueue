@@ -112,7 +112,7 @@ public partial class RegistrationTests
         var localCommandTypes = await localCommandStorage.FetchedCommandTypes.WaitAsync(TimeSpan.FromSeconds(5));
         var otherLocalCommandTypes = await otherLocalCommandStorage.FetchedCommandTypes.WaitAsync(TimeSpan.FromSeconds(5));
         await cts.CancelAsync();
-        Assert.CatchAsync<OperationCanceledException>(() => Task.WhenAll(fetching));
+        await Assert.CatchAsync<OperationCanceledException>(() => Task.WhenAll(fetching));
 
         Assert.That(localCommandTypes, Is.EquivalentTo(new[] { typeof(LocalCommand).FullName }));
         Assert.That(otherLocalCommandTypes, Is.EquivalentTo(new[] { typeof(OtherLocalCommand).FullName }));
