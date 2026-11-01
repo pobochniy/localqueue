@@ -15,7 +15,7 @@ using Moq;
 
 namespace LocalQueue.Tests;
 
-public class RegistrationTests
+public partial class RegistrationTests
 {
     [Test]
     public void CanRegisterCommandQueue()
@@ -112,7 +112,7 @@ public class RegistrationTests
         var localCommandTypes = await localCommandStorage.FetchedCommandTypes.WaitAsync(TimeSpan.FromSeconds(5));
         var otherLocalCommandTypes = await otherLocalCommandStorage.FetchedCommandTypes.WaitAsync(TimeSpan.FromSeconds(5));
         await cts.CancelAsync();
-        Assert.CatchAsync<OperationCanceledException>(() => Task.WhenAll(fetching));
+        await Assert.CatchAsync<OperationCanceledException>(() => Task.WhenAll(fetching));
 
         Assert.That(localCommandTypes, Is.EquivalentTo(new[] { typeof(LocalCommand).FullName }));
         Assert.That(otherLocalCommandTypes, Is.EquivalentTo(new[] { typeof(OtherLocalCommand).FullName }));
@@ -577,7 +577,7 @@ public static class ServiceProviderAssertionExtension
             .SingleOrDefault(x => x.CommandType == typeof(TCommand).FullName);
     }
 
-    private static IRawCommandHandler GetCommandHandler(this IServiceProvider serviceProvider)
+    internal static IRawCommandHandler GetCommandHandler(this IServiceProvider serviceProvider)
     {
         var commandProcessors = GetCommandProcessors(serviceProvider);
         var rawCommandHandlers = commandProcessors
@@ -708,7 +708,7 @@ public static class ConfigurationBuilderExtensions
         CommandProcessingOptions options,
         string? prefix = null)
     {
-        var myConfiguration = new Dictionary<string, string>
+        var myConfiguration = new Dictionary<string, string?>
         {
             { "PrefetchCount".WithPrefix(prefix), options.PrefetchCount.ToString() },
             { "WorkersCount".WithPrefix(prefix), options.WorkersCount.ToString() },
@@ -716,35 +716,35 @@ public static class ConfigurationBuilderExtensions
             { "IdleTimeout".WithPrefix(prefix), options.IdleTimeout.ToString() },
         };
 
-        return builder.AddInMemoryCollection(myConfiguration!);
+        return builder.AddInMemoryCollection(myConfiguration);
     }
 
     public static IConfigurationBuilder AddMySqlCommandStorageOptions(this IConfigurationBuilder builder,
         MySqlCommandQueueStorageOptions options,
         string? prefix = null)
     {
-        var myConfiguration = new Dictionary<string, string>
+        var myConfiguration = new Dictionary<string, string?>
         {
             { "TableName".WithPrefix(prefix), options.TableName },
             { "InsertBatchSize".WithPrefix(prefix), options.InsertBatchSize.ToString() },
             { "CommandTimeoutSeconds".WithPrefix(prefix), options.CommandTimeoutSeconds.ToString() },
         };
 
-        return builder.AddInMemoryCollection(myConfiguration!);
+        return builder.AddInMemoryCollection(myConfiguration);
     }
 
     public static IConfigurationBuilder AddMySqlCommandWorkerStorageOptions(this IConfigurationBuilder builder,
         MySqlLocalCommandsQueueWorkerStorageOptions options,
         string? prefix = null)
     {
-        var myConfiguration = new Dictionary<string, string>
+        var myConfiguration = new Dictionary<string, string?>
         {
             { "TableName".WithPrefix(prefix), options.TableName },
             { "ConnectionString".WithPrefix(prefix), options.ConnectionString },
             { "CommandTimeoutSeconds".WithPrefix(prefix), options.CommandTimeoutSeconds.ToString() },
         };
 
-        return builder.AddInMemoryCollection(myConfiguration!);
+        return builder.AddInMemoryCollection(myConfiguration);
     }
 
     internal static JsonSerializerOptions GetOptions(this ICommandSerializer serializer)
@@ -764,7 +764,7 @@ public static class ConfigurationBuilderExtensions
         return (JsonSerializerOptions)optionsField.GetValue(serializer)!;
     }
 
-    private static string WithPrefix(this string key, string? prefix = null) => !string.IsNullOrEmpty(prefix)
+    internal static string WithPrefix(this string key, string? prefix = null) => !string.IsNullOrEmpty(prefix)
         ? $"{prefix}:{key}"
         : key;
 }

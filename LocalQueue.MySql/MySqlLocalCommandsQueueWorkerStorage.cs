@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Data;
 using LocalQueue.Diagnostics;
 using LocalQueue.Storage;
@@ -5,6 +6,8 @@ using MySqlConnector;
 
 namespace LocalQueue.MySql;
 
+[SuppressMessage("Security", "S2077",
+    Justification = "Only the table name from the storage options is formatted into SQL: identifiers can't be parameters, values are")]
 internal class MySqlLocalCommandsQueueWorkerStorage(MySqlLocalCommandsQueueWorkerStorageOptions options)
     : ILocalCommandsQueueWorkerStorage
 {

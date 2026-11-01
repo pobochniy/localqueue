@@ -118,6 +118,46 @@ public class Service {
 }
 ```
 
+## Use with PostgreSQL storage
+
+Ensure table for command storage exists in your database
+
+```sql
+create table <name> (
+   id uuid not null primary key,
+   data jsonb not null,
+   command_type varchar(250) not null,
+   created_at_utc timestamptz not null,
+   locked_till_utc timestamptz,
+   try_count int not null default 0
+);
+create index on <name> (command_type, created_at_utc);
+```
+
+The table name may be qualified by the schema (`schema.table`), otherwise the table is looked up by the `search_path`
+of the connection (`public` by default). Unquoted names are folded to lower case as PostgreSQL does.
+
+Register Command queue and worker the same way as with MySQL, by `UsePostgreSqlStorage` of the `LocalQueue.PostgreSql`
+package, and enqueue commands with an `NpgsqlConnection` and `NpgsqlTransaction`
+
+```cs
+services
+    .AddLocalCommandQueue(c =>
+        c.UsePostgreSqlStorage(new PostgreSqlCommandQueueStorageOptions
+        {
+            TableName = <tablename>,
+        }))
+    .AddLocalCommandQueueWorker(c =>
+    {
+        c.UsePostgreSqlStorage(new PostgreSqlLocalCommandsQueueWorkerStorageOptions
+        {
+            ConnectionString = <connectionstring>,
+            TableName = <tablename>,
+        });
+        c.AddCommandHandler<ResizeImageCommand, ResizeImageHandler>();
+    });
+```
+
 ## Retries
 
 Every command type gets its own retry policy. Without one a failing command is tried 3 times with 500ms
@@ -215,7 +255,8 @@ alter table `<name>` drop index `<name>_LockedTillUtc_IDX`;
 ```
 
 The storage summary is collected once for the workers of the application with equal storages (`Equals`): MySQL
-storages are equal for the same server, port, database and table. Storages that are not equal are collected
+storages are equal for the same server, port, database and table, PostgreSQL storages for the same host, port,
+database, schema and table (`DataSourceName` is `database.schema.table`). Storages that are not equal are collected
 separately, the summaries of the storages with the same `DataSourceName` (the same table on different servers) are
 summed up in the gauges.
 

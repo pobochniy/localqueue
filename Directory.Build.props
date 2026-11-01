@@ -11,10 +11,4 @@
         <NoWarn>S1135</NoWarn>
         <CodeAnalysisTreatWarningsAsErrors>true</CodeAnalysisTreatWarningsAsErrors>
     </PropertyGroup>
-    <ItemGroup>
-        <PackageReference Include="SonarAnalyzer.CSharp" Version="10.17.0.131074">
-            <PrivateAssets>all</PrivateAssets>
-            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-        </PackageReference>
-    </ItemGroup>
 </Project>
