@@ -133,12 +133,35 @@ public abstract class EndToEndTests
         var handler = workerHost.GetRequiredService<LocalCommandHandler>();
         await handler.WaitCommandHandled(command);
 
-        var metricsJson = await workerHost.GetTestClient().GetStringAsync("/metrics");
-        Assert.That(metricsJson, Contains.Substring("local_command_queue_max_try_count"));
-        Assert.That(metricsJson, Contains.Substring("local_command_queue_length"));
-        Assert.That(metricsJson, Contains.Substring("local_command_queue_processing_time"));
-        Assert.That(metricsJson, Contains.Substring("local_command_queue_processing_lag"));
-        Assert.That(metricsJson, Contains.Substring("local_command_queue_completed"));
+        // The processing metrics are recorded after the handler returns and the command is deleted
+        string[] metrics =
+        [
+            "local_command_queue_max_try_count",
+            "local_command_queue_length",
+            "local_command_queue_processing_time",
+            "local_command_queue_processing_lag",
+            "local_command_queue_completed"
+        ];
+        var metricsText = string.Empty;
+        var timeout = Task.Delay(TimeSpan.FromSeconds(5));
+        while (!timeout.IsCompleted)
+        {
+            metricsText = await workerHost.GetTestClient().GetStringAsync("/metrics");
+            if (metrics.All(metricsText.Contains))
+            {
+                break;
+            }
+
+            await Task.Delay(200);
+        }
+
+        Assert.Multiple(() =>
+        {
+            foreach (var metric in metrics)
+            {
+                Assert.That(metricsText, Contains.Substring(metric));
+            }
+        });
     }
 
     private async Task<LocalCommand> EnqueueCommand(StorageHost commandQueueHost, int database)
