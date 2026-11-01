@@ -289,27 +289,27 @@ public static class PostgreSqlConfigurationBuilderExtensions
         PostgreSqlCommandQueueStorageOptions options,
         string? prefix = null)
     {
-        var myConfiguration = new Dictionary<string, string>
+        var myConfiguration = new Dictionary<string, string?>
         {
             { "TableName".WithPrefix(prefix), options.TableName },
             { "InsertBatchSize".WithPrefix(prefix), options.InsertBatchSize.ToString() },
             { "CommandTimeoutSeconds".WithPrefix(prefix), options.CommandTimeoutSeconds.ToString() },
         };
 
-        return builder.AddInMemoryCollection(myConfiguration!);
+        return builder.AddInMemoryCollection(myConfiguration);
     }
 
     public static IConfigurationBuilder AddPostgreSqlCommandWorkerStorageOptions(this IConfigurationBuilder builder,
         PostgreSqlLocalCommandsQueueWorkerStorageOptions options,
         string? prefix = null)
     {
-        var myConfiguration = new Dictionary<string, string>
+        var myConfiguration = new Dictionary<string, string?>
         {
             { "TableName".WithPrefix(prefix), options.TableName },
             { "ConnectionString".WithPrefix(prefix), options.ConnectionString },
             { "CommandTimeoutSeconds".WithPrefix(prefix), options.CommandTimeoutSeconds.ToString() },
         };
 
-        return builder.AddInMemoryCollection(myConfiguration!);
+        return builder.AddInMemoryCollection(myConfiguration);
     }
 }

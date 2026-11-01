@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using LocalQueue.Diagnostics;
 using LocalQueue.Storage;
 using Npgsql;
@@ -5,6 +6,8 @@ using NpgsqlTypes;
 
 namespace LocalQueue.PostgreSql;
 
+[SuppressMessage("Security", "S2077",
+    Justification = "Only the table name from the storage options is formatted into SQL: identifiers can't be parameters, values are")]
 internal class PostgreSqlLocalCommandsQueueWorkerStorage(PostgreSqlLocalCommandsQueueWorkerStorageOptions options)
     : ILocalCommandsQueueWorkerStorage
 {

@@ -708,7 +708,7 @@ public static class ConfigurationBuilderExtensions
         CommandProcessingOptions options,
         string? prefix = null)
     {
-        var myConfiguration = new Dictionary<string, string>
+        var myConfiguration = new Dictionary<string, string?>
         {
             { "PrefetchCount".WithPrefix(prefix), options.PrefetchCount.ToString() },
             { "WorkersCount".WithPrefix(prefix), options.WorkersCount.ToString() },
@@ -716,35 +716,35 @@ public static class ConfigurationBuilderExtensions
             { "IdleTimeout".WithPrefix(prefix), options.IdleTimeout.ToString() },
         };
 
-        return builder.AddInMemoryCollection(myConfiguration!);
+        return builder.AddInMemoryCollection(myConfiguration);
     }
 
     public static IConfigurationBuilder AddMySqlCommandStorageOptions(this IConfigurationBuilder builder,
         MySqlCommandQueueStorageOptions options,
         string? prefix = null)
     {
-        var myConfiguration = new Dictionary<string, string>
+        var myConfiguration = new Dictionary<string, string?>
         {
             { "TableName".WithPrefix(prefix), options.TableName },
             { "InsertBatchSize".WithPrefix(prefix), options.InsertBatchSize.ToString() },
             { "CommandTimeoutSeconds".WithPrefix(prefix), options.CommandTimeoutSeconds.ToString() },
         };
 
-        return builder.AddInMemoryCollection(myConfiguration!);
+        return builder.AddInMemoryCollection(myConfiguration);
     }
 
     public static IConfigurationBuilder AddMySqlCommandWorkerStorageOptions(this IConfigurationBuilder builder,
         MySqlLocalCommandsQueueWorkerStorageOptions options,
         string? prefix = null)
     {
-        var myConfiguration = new Dictionary<string, string>
+        var myConfiguration = new Dictionary<string, string?>
         {
             { "TableName".WithPrefix(prefix), options.TableName },
             { "ConnectionString".WithPrefix(prefix), options.ConnectionString },
             { "CommandTimeoutSeconds".WithPrefix(prefix), options.CommandTimeoutSeconds.ToString() },
         };
 
-        return builder.AddInMemoryCollection(myConfiguration!);
+        return builder.AddInMemoryCollection(myConfiguration);
     }
 
     internal static JsonSerializerOptions GetOptions(this ICommandSerializer serializer)
