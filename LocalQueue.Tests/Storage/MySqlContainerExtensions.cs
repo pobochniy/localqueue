@@ -1,17 +1,22 @@
+using MySqlConnector;
 using Testcontainers.MySql;
 
 namespace LocalQueue.Tests.Storage;
 
 public static class MySqlContainerExtensions
 {
-    public static Task CreateLocalQueueCommandsTable(this MySqlContainer container, string tableName)
+    public static async Task CreateLocalQueueCommandsTable(this MySqlContainer container, string tableName)
     {
-        return container.ExecScriptAsync(createTable(tableName));
+        await using var connection = new MySqlConnection(container.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = CreateTable(tableName);
+        await command.ExecuteNonQueryAsync();
     }
 
     #region doc_create_table_script
 
-    private static string createTable(string tableName) => @$"
+    private static string CreateTable(string tableName) => @$"
                 create table {tableName} (
                    Id binary(16) not null primary key ,
                    `Data` json NOT NULL,
