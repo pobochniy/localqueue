@@ -1,7 +1,28 @@
 <Project>
-    <PropertyGroup>
-        <RepositoryUrl>https://github.com/pobochniy/localqueue</RepositoryUrl>
+    <PropertyGroup Label="Package">
+        <!-- Package ids are AsuTrack.<project>: AsuTrack.LocalQueue, AsuTrack.LocalQueue.MySql, ... Namespaces and assembly names stay the same -->
+        <PackageId>AsuTrack.$(MSBuildProjectName)</PackageId>
+        <Authors>Viktor Pobochniy</Authors>
+        <Company>AsuTrack</Company>
+        <Description>Local command queue: enqueue commands in the same database transaction as your data and handle them in the background</Description>
+        <PackageTags>queue;command-queue;outbox;background-jobs;mysql;postgresql</PackageTags>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageProjectUrl>https://github.com/asutrack/localqueue</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/asutrack/localqueue</RepositoryUrl>
+        <PublishRepositoryUrl>true</PublishRepositoryUrl>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+        <IncludeSymbols>true</IncludeSymbols>
+        <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     </PropertyGroup>
+
+    <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+        <!-- Deterministic paths in the pdb for Source Link -->
+        <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="/" Visible="false" />
+    </ItemGroup>
 
     <PropertyGroup>
         <TargetFramework>net10.0</TargetFramework>

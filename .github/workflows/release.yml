@@ -26,11 +26,8 @@ jobs:
       ARTIFACT_DIR: out
       PACKAGE_VERSION: ${{ needs.Check.outputs.package-version }}
     permissions:
-      contents: write # to be able to publish a GitHub release
-#      issues: write # to be able to comment on released issues
-#      pull-requests: write # to be able to comment on released pull requests
-#      id-token: write # to enable use of OIDC for npm provenance
-      packages: write # for pushing GitHub Nuget packages
+      contents: read
+      id-token: write # nuget.org Trusted Publishing exchanges the GitHub OIDC token for a short-lived API key
     steps:
       - uses: actions/checkout@v6
         with:
@@ -44,7 +41,7 @@ jobs:
       - name: Test
         run: dotnet test
 
-      - name: Publish
+      - name: Pack
         env:
           PACK_ARGS: -c Release -o ${{ env.ARTIFACT_DIR }} -p:Version=${{ env.PACKAGE_VERSION }}
         run: |
@@ -52,4 +49,17 @@ jobs:
           dotnet pack LocalQueue.MySql/LocalQueue.MySql.csproj $PACK_ARGS
           dotnet pack LocalQueue.PostgreSql/LocalQueue.PostgreSql.csproj $PACK_ARGS
           dotnet pack LocalQueue.OpenTelemetry/LocalQueue.OpenTelemetry.csproj $PACK_ARGS
-          dotnet nuget push --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate out/*.nupkg
+
+      - name: NuGet login
+        uses: NuGet/login@v1
+        id: nuget-login
+        with:
+          user: pobochniy
+
+      - name: Push to nuget.org
+        # symbol packages (.snupkg) next to the .nupkg are pushed too
+        run: >
+          dotnet nuget push "${{ env.ARTIFACT_DIR }}/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+          --skip-duplicate

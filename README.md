@@ -2,6 +2,18 @@
 
 Libraries to enqueue and handle local commands
 
+## Install
+
+```shell
+dotnet add package AsuTrack.LocalQueue.MySql       # MySQL storage
+dotnet add package AsuTrack.LocalQueue.PostgreSql  # PostgreSQL storage
+dotnet add package AsuTrack.LocalQueue.OpenTelemetry  # metrics, optional
+```
+
+Storage packages bring `AsuTrack.LocalQueue` with them. The packages were published to GitHub Packages as
+`LocalQueue.*` up to 2.1.0 and moved to nuget.org as `AsuTrack.LocalQueue.*` starting with 1.0.0: namespaces and the API
+are the same, only the package ids changed.
+
 ## Use with MySql storage 
 
 Ensure table for command storage exists in your database
@@ -137,7 +149,7 @@ create index on <name> (command_type, created_at_utc);
 The table name may be qualified by the schema (`schema.table`), otherwise the table is looked up by the `search_path`
 of the connection (`public` by default). Unquoted names are folded to lower case as PostgreSQL does.
 
-Register Command queue and worker the same way as with MySQL, by `UsePostgreSqlStorage` of the `LocalQueue.PostgreSql`
+Register Command queue and worker the same way as with MySQL, by `UsePostgreSqlStorage` of the `AsuTrack.LocalQueue.PostgreSql`
 package, and enqueue commands with an `NpgsqlConnection` and `NpgsqlTransaction`
 
 ```cs
@@ -262,7 +274,7 @@ summed up in the gauges.
 
 ## Use with OpenTelemetry
 
-Register instruments by LocalQueue.OpenTelemetry package
+Register instruments by AsuTrack.LocalQueue.OpenTelemetry package
 ```cs
 services
     .AddOpenTelemetry()
