@@ -79,16 +79,19 @@ internal class PostgreSqlLocalCommandsQueueWorkerStorage(PostgreSqlLocalCommands
         return list;
     }
 
-    public async Task Delete(Guid id, CancellationToken ct)
+    public async Task<bool> Delete(Guid id, int tryCount, CancellationToken ct)
     {
         await using var connection = new NpgsqlConnection(options.ConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
-        await connection.ExecuteNonQueryAsync(
-            $"delete from {options.TableName} where id = @id",
-            [new NpgsqlParameter("id", NpgsqlDbType.Uuid) { Value = id }],
+        return await connection.ExecuteNonQueryAsync(
+            $"delete from {options.TableName} where id = @id and try_count = @tryCount",
+            [
+                new NpgsqlParameter("id", NpgsqlDbType.Uuid) { Value = id },
+                new NpgsqlParameter("tryCount", NpgsqlDbType.Integer) { Value = tryCount }
+            ],
             ct,
-            commandTimeout: options.CommandTimeoutSeconds);
+            commandTimeout: options.CommandTimeoutSeconds) > 0;
     }
 
     public async Task<IEnumerable<LocalQueueStorageSummary>> GetSummary(CancellationToken ct)
@@ -117,19 +120,21 @@ internal class PostgreSqlLocalCommandsQueueWorkerStorage(PostgreSqlLocalCommands
         return result;
     }
 
-    public async Task MakeInvisibleFor(Guid id, TimeSpan timeout, CancellationToken ct)
+    public async Task<bool> MakeInvisibleFor(Guid id, int tryCount, TimeSpan timeout, CancellationToken ct)
     {
         await using var connection = new NpgsqlConnection(options.ConnectionString);
         await connection.OpenAsync(ct);
 
-        await connection.ExecuteNonQueryAsync(
-            $"update {options.TableName} set locked_till_utc = now() + @timeout where id = @id",
+        return await connection.ExecuteNonQueryAsync(
+            $@"update {options.TableName} set locked_till_utc = now() + @timeout
+            where id = @id and try_count = @tryCount",
             [
                 new NpgsqlParameter("id", NpgsqlDbType.Uuid) { Value = id },
+                new NpgsqlParameter("tryCount", NpgsqlDbType.Integer) { Value = tryCount },
                 new NpgsqlParameter("timeout", NpgsqlDbType.Interval) { Value = timeout }
             ],
             ct,
-            commandTimeout: options.CommandTimeoutSeconds);
+            commandTimeout: options.CommandTimeoutSeconds) > 0;
     }
 
     private static (string, int, string, string, string) TableIdentity(

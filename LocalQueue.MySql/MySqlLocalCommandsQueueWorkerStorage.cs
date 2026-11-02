@@ -14,6 +14,9 @@ internal class MySqlLocalCommandsQueueWorkerStorage(MySqlLocalCommandsQueueWorke
     // The table identity: connection strings that differ in key order or pool settings lead to the same table
     private readonly (string Server, uint Port, string Database, string Table) _table = TableIdentity(options);
 
+    private readonly string _matchedRowsConnectionString =
+        new MySqlConnectionStringBuilder(options.ConnectionString) { UseAffectedRows = false }.ConnectionString;
+
     public async Task<IEnumerable<CommandRecord>> Prefetch(int count, TimeSpan timeout,
         IReadOnlyCollection<string> commandTypes, CancellationToken ct)
     {
@@ -112,21 +115,22 @@ internal class MySqlLocalCommandsQueueWorkerStorage(MySqlLocalCommandsQueueWorke
         return (lockTillUtc, list);
     }
 
-    public async Task Delete(Guid id, CancellationToken ct)
+    public async Task<bool> Delete(Guid id, int tryCount, CancellationToken ct)
     {
         await using var connection = new MySqlConnection(options.ConnectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
         var parameters = new[]
         {
-            new MySqlParameter("@id", MySqlDbType.Binary) { Value = id.ToByteArray() }
+            new MySqlParameter("@id", MySqlDbType.Binary) { Value = id.ToByteArray() },
+            new MySqlParameter("@tryCount", MySqlDbType.Int32) { Value = tryCount }
         };
 
-        await connection.ExecuteNonQueryAsync(
-            @$"delete from {options.TableName} where Id = @id",
+        return await connection.ExecuteNonQueryAsync(
+            @$"delete from {options.TableName} where Id = @id and TryCount = @tryCount",
             parameters,
             ct,
-            commandTimeout: options.CommandTimeoutSeconds);
+            commandTimeout: options.CommandTimeoutSeconds) > 0;
     }
 
     public async Task<IEnumerable<LocalQueueStorageSummary>> GetSummary(CancellationToken ct)
@@ -159,23 +163,25 @@ internal class MySqlLocalCommandsQueueWorkerStorage(MySqlLocalCommandsQueueWorke
         return result;
     }
 
-    public async Task MakeInvisibleFor(Guid id, TimeSpan timeout, CancellationToken ct)
+    public async Task<bool> MakeInvisibleFor(Guid id, int tryCount, TimeSpan timeout, CancellationToken ct)
     {
-        await using var connection = new MySqlConnection(options.ConnectionString);
+        // The rows found by the update, not the rows changed: the lock may be set to the value it already has
+        await using var connection = new MySqlConnection(_matchedRowsConnectionString);
         await connection.OpenAsync(ct);
 
         await using var command = connection.CreateCommand();
         command.CommandType = CommandType.Text;
         command.Parameters.Clear();
         command.Parameters.Add("@id", MySqlDbType.Binary).Value = id.ToByteArray();
+        command.Parameters.Add("@tryCount", MySqlDbType.Int32).Value = tryCount;
         command.Parameters.Add("@timeout", DbType.Int32).Value = (int)timeout.TotalMilliseconds;
         command.CommandTimeout = options.CommandTimeoutSeconds;
         command.CommandText =
             $@"update {options.TableName}
 			set LockedTillUtc = utc_timestamp() + interval (@timeout * 1000) microsecond
-            where Id = @id";
-        
-        await command.ExecuteNonQueryAsync(ct);
+            where Id = @id and TryCount = @tryCount";
+
+        return await command.ExecuteNonQueryAsync(ct) > 0;
     }
 
     private static (string, uint, string, string) TableIdentity(MySqlLocalCommandsQueueWorkerStorageOptions options)

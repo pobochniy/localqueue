@@ -116,6 +116,9 @@ public class LocalCommandQueueWorkerConfigurator : CommandProcessingOptions
             throw new InvalidOperationException("No command handlers configured.");
         }
 
+        // Stateless: the lease follows the command of the current async flow, so handlers of any lifetime may use it
+        serviceCollection.TryAddSingleton<ICommandLease, CommandLease>();
+
         var commandChannel = new FetchCommandChannel(PrefetchCount);
         serviceCollection.AddSingleton(sp =>
         {

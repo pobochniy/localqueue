@@ -213,21 +213,65 @@ services
     });
 ```
 
-The lock is not extended while a command is processed: keep `InvisibilityTimeout` above the longest processing
-time of the worker's commands, otherwise another instance prefetches the command again and processes it in
-parallel. A worker without handlers is a configuration error and fails on registration. Give each command type
-to one worker per table: a type registered in two workers is processed by both, the same way as by two instances.
+Keep `InvisibilityTimeout` above the processing time of the worker's commands, otherwise another instance
+prefetches the command again and processes it in parallel; a handler that may run longer extends the lock itself
+(see [Long commands](#long-commands)). A worker without handlers is a configuration error and fails on
+registration. Give each command type to one worker per table: a type registered in two workers is processed by both, the same way as by two instances.
 
 Commands with no handler in any worker of the application are not prefetched and stay in the table: the storage
 summary logs a warning with their types when they appear (the table may be shared with another application that
 handles them), they are counted in the `local-command-queue-length` gauge as well. Custom storages
-(`ILocalCommandsQueueWorkerStorage`) get the command types to prefetch in `Prefetch` and must filter by them.
+(`ILocalCommandsQueueWorkerStorage`) get the command types to prefetch in `Prefetch` and must filter by them;
+`Delete` and `MakeInvisibleFor` get `TryCount` of the prefetch and must change the command in one statement only
+while it has the same `TryCount`, returning whether it was changed.
 
 The storage summary is collected once for the workers of the application with equal storages (`Equals`): MySQL
 storages are equal for the same server, port, database and table, PostgreSQL storages for the same host, port,
 database, schema and table (`DataSourceName` is `database.schema.table`). Storages that are not equal are collected
 separately, the summaries of the storages with the same `DataSourceName` (the same table on different servers) are
 summed up in the gauges.
+
+## Long commands
+
+A handler that runs for minutes in steps, each of them unpredictable (calls to an external model, for example),
+extends the lock between the steps instead of setting `InvisibilityTimeout` for the worst case. Inject
+`ICommandLease` into the handler: it is the lock on the command the handler is processing
+
+```cs
+public class GenerateReportHandler(ICommandLease lease, ReportBuilder builder) : ICommandHandler<GenerateReportCommand>
+{
+    public async Task Handle(GenerateReportCommand command, CancellationToken ct)
+    {
+        foreach (var step in builder.Steps(command))
+        {
+            await lease.Extend(TimeSpan.FromMinutes(10), ct); // invisible for 10 more minutes from now
+            await step.Run(ct);
+        }
+    }
+}
+```
+
+`Extend` keeps the command invisible for at least the given time from now and never shortens the lock: when it
+already ends later, nothing is changed. When the lock ends earlier, it is taken for one and a half of the given
+time, so extending before every step writes to the database once per a half of that time, however short the steps
+are. A command left by a crashed instance comes back within one and a half of the extension, not after the longest
+possible processing time. Retries
+inside one delivery count the extended lock as well; if all of them fail, the command comes back when the
+extended lock is over, unless `RetryAfterFailure` hides it for another time.
+
+The lease follows the command processed in the current async flow, so it may be injected into a handler of any
+lifetime, a singleton included. Outside of a worker (the handler is called directly) there is no command to lock:
+`Extend` logs a warning and does nothing; mock `ICommandLease` in the tests of the handler.
+
+Extend the lock before it is over and with a margin: once it is over, another instance may prefetch the command
+and process it in parallel. The storage tells the instances apart by `TryCount`, which every prefetch increments:
+the lock is extended, the command is deleted or hidden after a failure only while it is still held by the
+prefetch of this instance. A lock that is over but not taken by anyone is extended as usual. When another instance
+has taken the command, `Extend` throws `CommandLeaseExpiredException`: the worker stops the processing without
+retries and without deleting the command, the handler only has to let the exception go (wrapped into another
+exception as well). `Extend` takes a positive duration and throws after the handler has returned, from work it
+has left running. The instance counts the lock by its own monotonic clock from before each write to the database,
+so the clocks of the instance and of the database don't have to be synchronized.
 
 ## Use with OpenTelemetry
 

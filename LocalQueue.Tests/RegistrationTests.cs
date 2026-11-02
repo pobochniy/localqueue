@@ -64,6 +64,26 @@ public partial class RegistrationTests
     }
 
     [Test]
+    public void CanInjectCommandLease_IntoSingletonHandler()
+    {
+        var serviceCollection = new ServiceCollection();
+        serviceCollection.AddLogging();
+
+        serviceCollection.AddSingleton<LeaseCommandHandler>();
+        serviceCollection.AddLocalCommandQueueWorker(c => c
+            .UseStorage(Mock.Of<ILocalCommandsQueueWorkerStorage>())
+            .AddCommandHandler<LocalCommand, LeaseCommandHandler>()
+        );
+
+        // A scoped lease would be a captive dependency of the singleton and fail the validation
+        using var serviceProvider = serviceCollection.BuildServiceProvider(
+            new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
+
+        Assert.That(serviceProvider.GetRequiredService<LeaseCommandHandler>().Lease,
+            Is.SameAs(serviceProvider.GetRequiredService<ICommandLease>()));
+    }
+
+    [Test]
     public void CannotRegisterWorkerWithoutCommandHandlers()
     {
         var serviceCollection = new ServiceCollection();
@@ -468,6 +488,13 @@ public partial class RegistrationTests
         {
             return Task.CompletedTask;
         }
+    }
+
+    private class LeaseCommandHandler(ICommandLease lease) : ICommandHandler<LocalCommand>
+    {
+        public ICommandLease Lease => lease;
+
+        public Task Handle(LocalCommand command, CancellationToken ct) => lease.Extend(TimeSpan.FromMinutes(1), ct);
     }
 
     private class LocalStringConverter : JsonConverter<string>

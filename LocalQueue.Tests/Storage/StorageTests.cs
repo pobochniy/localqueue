@@ -171,11 +171,51 @@ public abstract class StorageTests
         await ExecuteInTransaction((connection, transaction) =>
             commandStorage.Create(connection, transaction, new[] { command }, CancellationToken.None));
 
-        await workerStorage.Delete(command.Id, CancellationToken.None);
+        Assert.That(await workerStorage.Delete(command.Id, 0, CancellationToken.None), Is.True);
 
         var fetchedCommands =
             await workerStorage.Prefetch(1, TimeSpan.FromMilliseconds(500), [command.CommandType], CancellationToken.None);
         Assert.That(fetchedCommands.Count(), Is.EqualTo(0));
+    }
+
+    [Test]
+    public async Task CannotDeleteOrLockCommand_WhenAnotherInstanceHasPrefetchedIt()
+    {
+        var commandType = $"CommandType_{nameof(CannotDeleteOrLockCommand_WhenAnotherInstanceHasPrefetchedIt)}";
+        var command = new CommandRecord
+        {
+            Id = Guid.NewGuid(),
+            CommandType = commandType,
+            Data = "{\"test\": \"test\"}",
+            CreatedAtUtc = new DateTime(2024, 03, 01, 10, 00, 00, DateTimeKind.Utc),
+        };
+        var commandsStorage = CreateCommandsStorage();
+        var workerStorage = CreateWorkerStorage();
+
+        await ExecuteInTransaction((connection, transaction) =>
+            commandsStorage.Create(connection, transaction, new[] { command }, CancellationToken.None));
+
+        var first = (await workerStorage.Prefetch(1, TimeSpan.FromMilliseconds(500), [commandType],
+            CancellationToken.None)).Single();
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        var second = (await workerStorage.Prefetch(1, TimeSpan.FromMilliseconds(500), [commandType],
+            CancellationToken.None)).Single();
+
+        // The first prefetch has lost the command: its writes must not touch it
+        Assert.That(await workerStorage.MakeInvisibleFor(command.Id, first.TryCount, TimeSpan.FromMinutes(1),
+            CancellationToken.None), Is.False);
+        Assert.That(await workerStorage.Delete(command.Id, first.TryCount, CancellationToken.None), Is.False);
+
+        Assert.That(await workerStorage.MakeInvisibleFor(command.Id, second.TryCount, TimeSpan.FromMinutes(1),
+            CancellationToken.None), Is.True);
+        // Locked by the extension, not by the prefetch of 500 ms
+        await Task.Delay(TimeSpan.FromSeconds(2));
+        Assert.That(await workerStorage.Prefetch(1, TimeSpan.FromMinutes(1), [commandType], CancellationToken.None),
+            Is.Empty);
+        // The lock may be set to the value it already has: the row is found, not changed
+        Assert.That(await workerStorage.MakeInvisibleFor(command.Id, second.TryCount, TimeSpan.FromMinutes(1),
+            CancellationToken.None), Is.True);
+        Assert.That(await workerStorage.Delete(command.Id, second.TryCount, CancellationToken.None), Is.True);
     }
 
     [Test]
@@ -195,7 +235,8 @@ public abstract class StorageTests
         await ExecuteInTransaction((connection, transaction) =>
             commandsStorage.Create(connection, transaction, new[] { command }, CancellationToken.None));
 
-        await workerStorage.MakeInvisibleFor(command.Id, TimeSpan.FromSeconds(30), CancellationToken.None);
+        Assert.That(await workerStorage.MakeInvisibleFor(command.Id, 0, TimeSpan.FromSeconds(30), CancellationToken.None),
+            Is.True);
 
         var fetchedCommands =
             await workerStorage.Prefetch(1, TimeSpan.FromMilliseconds(10), [command.CommandType], CancellationToken.None);
