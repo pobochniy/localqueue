@@ -21,7 +21,8 @@ internal sealed class CommandLeaseState
 
     private readonly Guid _id;
     private readonly int _tryCount;
-    private readonly ILocalCommandsQueueWorkerStorage _storage;
+    // Null once released: work the handler has left running keeps this state, but not the storage of its scope
+    private volatile ILocalCommandsQueueWorkerStorage? _storage;
 
     // Environment.TickCount64, NoLock when the command came without a lock
     private long _lockedTillMs;
@@ -35,7 +36,8 @@ internal sealed class CommandLeaseState
         _tryCount = commandRecord.TryCount;
         _storage = storage;
         _lockedTillMs = commandRecord.LocalLockedTillMs
-                        // Not prefetched by the worker: only the lock by the clock of the storage is known
+                        // Only for a record not from CommandFetcher (tests): the lock by the clock of the storage
+                        // is compared with the clock of the instance, so it is exact only for synchronized clocks
                         ?? (commandRecord.LockedTillUtc is { } lockedTillUtc
                             ? Environment.TickCount64 + (long)(lockedTillUtc - DateTime.UtcNow).TotalMilliseconds
                             : NoLock);
@@ -53,11 +55,15 @@ internal sealed class CommandLeaseState
     public async Task Extend(TimeSpan duration, CancellationToken ct)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
+        // A lock for months is a mistake, and its milliseconds would overflow the storage arguments
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(duration, ICommandLease.MaxDuration);
 
         await _gate.WaitAsync(ct);
         try
         {
-            if (_released)
+            // Release sets the flag before it drops the storage: the storage is read first, the flag is checked after
+            var storage = _storage;
+            if (_released || storage is null)
             {
                 throw new CommandLeaseExpiredException(_id);
             }
@@ -76,7 +82,7 @@ internal sealed class CommandLeaseState
             var lockedFor = duration + duration / 2;
 
             // A lock that is over locally is still extended while no other instance has prefetched the command
-            if (!await _storage.MakeInvisibleFor(_id, _tryCount, lockedFor, ct))
+            if (!await storage.MakeInvisibleFor(_id, _tryCount, lockedFor, ct))
             {
                 _released = true;
                 throw new CommandLeaseExpiredException(_id);
@@ -96,5 +102,6 @@ internal sealed class CommandLeaseState
     public void Release()
     {
         _released = true;
+        _storage = null;
     }
 }

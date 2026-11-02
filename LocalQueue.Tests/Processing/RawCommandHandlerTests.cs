@@ -637,7 +637,8 @@ public class RawCommandHandlerTests
 
     [TestCase(0)]
     [TestCase(-1)]
-    public async Task ShouldNotUnlockCommand_WhenLeaseIsExtendedForNonPositiveDuration(int minutes)
+    [TestCase(14 * 24 * 60 + 1)]
+    public async Task ShouldNotChangeLock_WhenLeaseIsExtendedForDurationOutOfRange(int minutes)
     {
         var command = new TestCtsCommand();
         ICommandLease lease = new CommandLease(NullLogger<CommandLease>.Instance);

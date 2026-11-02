@@ -15,6 +15,11 @@ namespace LocalQueue.Processing;
 public interface ICommandLease
 {
     /// <summary>
+    /// The longest <see cref="Extend"/> may lock the command for at once.
+    /// </summary>
+    static TimeSpan MaxDuration => TimeSpan.FromDays(14);
+
+    /// <summary>
     /// Keep the command invisible for other workers for at least <paramref name="duration"/> from now.
     /// </summary>
     /// <remarks>
@@ -25,11 +30,15 @@ public interface ICommandLease
     /// If the processing fails after the extension, the command comes back when the extended lock is over,
     /// unless the retry policy hides it for another time.
     /// </remarks>
-    /// <param name="duration">How long from now the command stays locked, positive.</param>
+    /// <param name="duration">
+    /// How long from now the command stays locked, positive and at most <see cref="MaxDuration"/>.
+    /// </param>
     /// <param name="ct">A token to cancel the operation.</param>
     /// <exception cref="CommandLeaseExpiredException">
     /// Another instance has prefetched the command, or the processing is over: the handler must stop.
     /// </exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="duration"/> is not positive.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="duration"/> is not positive or longer than <see cref="MaxDuration"/>.
+    /// </exception>
     Task Extend(TimeSpan duration, CancellationToken ct);
 }

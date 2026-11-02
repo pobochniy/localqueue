@@ -13,7 +13,7 @@ public static class ServiceCollectionExtension
     /// </summary>
     /// <param name="builder"></param>
     /// <returns></returns>
-    public static MeterProviderBuilder AddDodoLocalCommandQueueInstrumentation(this MeterProviderBuilder builder)
+    public static MeterProviderBuilder AddLocalCommandQueueInstrumentation(this MeterProviderBuilder builder)
     {
         builder
             .AddMeter(Instruments.MeterName)

@@ -216,7 +216,8 @@ services
 Keep `InvisibilityTimeout` above the processing time of the worker's commands, otherwise another instance
 prefetches the command again and processes it in parallel; a handler that may run longer extends the lock itself
 (see [Long commands](#long-commands)). A worker without handlers is a configuration error and fails on
-registration. Give each command type to one worker per table: a type registered in two workers is processed by both, the same way as by two instances.
+registration. Give each command type to one worker per table: a type registered in two workers is processed by both,
+the same way as by two instances.
 
 Commands with no handler in any worker of the application are not prefetched and stay in the table: the storage
 summary logs a warning with their types when they appear (the table may be shared with another application that
@@ -255,9 +256,8 @@ public class GenerateReportHandler(ICommandLease lease, ReportBuilder builder) :
 already ends later, nothing is changed. When the lock ends earlier, it is taken for one and a half of the given
 time, so extending before every step writes to the database once per a half of that time, however short the steps
 are. A command left by a crashed instance comes back within one and a half of the extension, not after the longest
-possible processing time. Retries
-inside one delivery count the extended lock as well; if all of them fail, the command comes back when the
-extended lock is over, unless `RetryAfterFailure` hides it for another time.
+possible processing time. Retries inside one delivery count the extended lock as well; if all of them fail, the
+command comes back when the extended lock is over, unless `RetryAfterFailure` hides it for another time.
 
 The lease follows the command processed in the current async flow, so it may be injected into a handler of any
 lifetime, a singleton included. Outside of a worker (the handler is called directly) there is no command to lock:
@@ -269,9 +269,17 @@ the lock is extended, the command is deleted or hidden after a failure only whil
 prefetch of this instance. A lock that is over but not taken by anyone is extended as usual. When another instance
 has taken the command, `Extend` throws `CommandLeaseExpiredException`: the worker stops the processing without
 retries and without deleting the command, the handler only has to let the exception go (wrapped into another
-exception as well). `Extend` takes a positive duration and throws after the handler has returned, from work it
-has left running. The instance counts the lock by its own monotonic clock from before each write to the database,
-so the clocks of the instance and of the database don't have to be synchronized.
+exception as well). `Extend` takes a positive duration of at most `ICommandLease.MaxDuration` (14 days) and throws
+after the handler has returned, from work it has left running. The instance counts the lock by its own monotonic
+clock from before each write to the database, so the clocks of the instance and of the database don't have to be
+synchronized.
+
+## Upgrading to 3.0
+
+- Custom storages: `ILocalCommandsQueueWorkerStorage.Delete` and `MakeInvisibleFor` take `TryCount` of the prefetch
+  and return `bool`, see [Workers for different command types](#workers-for-different-command-types).
+- OpenTelemetry: the instruments are registered by `AddLocalCommandQueueInstrumentation`, the old method with
+  the company prefix is removed.
 
 ## Use with OpenTelemetry
 
@@ -281,6 +289,6 @@ Register instruments by the `AsuTrack.LocalQueue.OpenTelemetry` package
 services
     .AddOpenTelemetry()
     .WithMetrics(c => c
-        .AddDodoLocalCommandQueueInstrumentation()
+        .AddLocalCommandQueueInstrumentation()
         .AddPrometheusExporter());
 ```

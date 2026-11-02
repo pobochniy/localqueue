@@ -219,6 +219,33 @@ public abstract class StorageTests
     }
 
     [Test]
+    public async Task LocksCommand_ForLongerThanIntOfMilliseconds()
+    {
+        var command = new CommandRecord
+        {
+            Id = Guid.NewGuid(),
+            CommandType = $"CommandType_{nameof(LocksCommand_ForLongerThanIntOfMilliseconds)}",
+            Data = "{\"test\": \"test\"}",
+            CreatedAtUtc = new DateTime(2024, 03, 01, 10, 00, 00, DateTimeKind.Utc),
+        };
+        var commandsStorage = CreateCommandsStorage();
+        var workerStorage = CreateWorkerStorage();
+
+        await ExecuteInTransaction((connection, transaction) =>
+            commandsStorage.Create(connection, transaction, new[] { command }, CancellationToken.None));
+
+        // 30 days are more than int.MaxValue milliseconds: the lock must not be cut to 24.8 days
+        var fetched = (await workerStorage.Prefetch(1, TimeSpan.FromDays(30), [command.CommandType],
+            CancellationToken.None)).Single();
+        Assert.That(fetched.LockedTillUtc, Is.GreaterThan(DateTime.UtcNow.AddDays(29)));
+
+        Assert.That(await workerStorage.MakeInvisibleFor(command.Id, fetched.TryCount, TimeSpan.FromDays(30),
+            CancellationToken.None), Is.True);
+        Assert.That(await workerStorage.Prefetch(1, TimeSpan.FromDays(30), [command.CommandType],
+            CancellationToken.None), Is.Empty);
+    }
+
+    [Test]
     public async Task CannotPrefetchInvisibleCommands()
     {
         var commandType = $"CommandType_{nameof(CanDeleteCommand)}";

@@ -14,8 +14,10 @@ internal class MySqlLocalCommandsQueueWorkerStorage(MySqlLocalCommandsQueueWorke
     // The table identity: connection strings that differ in key order or pool settings lead to the same table
     private readonly (string Server, uint Port, string Database, string Table) _table = TableIdentity(options);
 
-    private readonly string _matchedRowsConnectionString =
-        new MySqlConnectionStringBuilder(options.ConnectionString) { UseAffectedRows = false }.ConnectionString;
+    // The rows found by an update, not the rows changed: the lock may be set to the value it already has.
+    // That is the default of MySqlConnector: the string is changed only when it asks for the changed rows,
+    // a different string has its own connection pool
+    private readonly string _matchedRowsConnectionString = MatchedRowsConnectionString(options.ConnectionString);
 
     public async Task<IEnumerable<CommandRecord>> Prefetch(int count, TimeSpan timeout,
         IReadOnlyCollection<string> commandTypes, CancellationToken ct)
@@ -76,12 +78,12 @@ internal class MySqlLocalCommandsQueueWorkerStorage(MySqlLocalCommandsQueueWorke
             FOR UPDATE SKIP LOCKED)");
 
         command.Parameters.Clear();
-        command.Parameters.Add("@timeout", DbType.DateTime).Value = (int)timeout.TotalMilliseconds;
+        command.Parameters.Add("@timeout", MySqlDbType.Int64).Value = Microseconds(timeout);
         command.Parameters.AddRange(commandTypesParameters);
         command.CommandType = CommandType.Text;
         command.CommandTimeout = options.CommandTimeoutSeconds;
         command.CommandText = $@"
-            select utc_timestamp() + interval (@timeout * 1000) microsecond as LockedTillUtc;
+            select utc_timestamp() + interval @timeout microsecond as LockedTillUtc;
             {string.Join(" union all ", commandTypesQueries)}
             order by CreatedAtUtc
             limit {count}";
@@ -165,7 +167,6 @@ internal class MySqlLocalCommandsQueueWorkerStorage(MySqlLocalCommandsQueueWorke
 
     public async Task<bool> MakeInvisibleFor(Guid id, int tryCount, TimeSpan timeout, CancellationToken ct)
     {
-        // The rows found by the update, not the rows changed: the lock may be set to the value it already has
         await using var connection = new MySqlConnection(_matchedRowsConnectionString);
         await connection.OpenAsync(ct);
 
@@ -174,14 +175,29 @@ internal class MySqlLocalCommandsQueueWorkerStorage(MySqlLocalCommandsQueueWorke
         command.Parameters.Clear();
         command.Parameters.Add("@id", MySqlDbType.Binary).Value = id.ToByteArray();
         command.Parameters.Add("@tryCount", MySqlDbType.Int32).Value = tryCount;
-        command.Parameters.Add("@timeout", DbType.Int32).Value = (int)timeout.TotalMilliseconds;
+        command.Parameters.Add("@timeout", MySqlDbType.Int64).Value = Microseconds(timeout);
         command.CommandTimeout = options.CommandTimeoutSeconds;
         command.CommandText =
             $@"update {options.TableName}
-			set LockedTillUtc = utc_timestamp() + interval (@timeout * 1000) microsecond
+			set LockedTillUtc = utc_timestamp() + interval @timeout microsecond
             where Id = @id and TryCount = @tryCount";
 
         return await command.ExecuteNonQueryAsync(ct) > 0;
+    }
+
+    // A bigint of microseconds: an int of milliseconds overflows after 24 days and moves the lock into the past
+    private static long Microseconds(TimeSpan timeout) => timeout.Ticks / TimeSpan.TicksPerMicrosecond;
+
+    private static string MatchedRowsConnectionString(string connectionString)
+    {
+        var builder = new MySqlConnectionStringBuilder(connectionString);
+        if (!builder.UseAffectedRows)
+        {
+            return connectionString;
+        }
+
+        builder.UseAffectedRows = false;
+        return builder.ConnectionString;
     }
 
     private static (string, uint, string, string) TableIdentity(MySqlLocalCommandsQueueWorkerStorageOptions options)
