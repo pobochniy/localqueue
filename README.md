@@ -10,11 +10,9 @@ dotnet add package AsuTrack.LocalQueue.PostgreSql  # PostgreSQL storage
 dotnet add package AsuTrack.LocalQueue.OpenTelemetry  # metrics, optional
 ```
 
-Storage packages bring `AsuTrack.LocalQueue` with them. The packages were published to GitHub Packages as
-`LocalQueue.*` up to 2.1.0 and moved to nuget.org as `AsuTrack.LocalQueue.*` starting with 1.0.0: namespaces and the API
-are the same, only the package ids changed.
+Storage packages bring `AsuTrack.LocalQueue` with them.
 
-## Use with MySql storage 
+## Use with MySQL storage
 
 Ensure table for command storage exists in your database
 
@@ -27,8 +25,9 @@ create table `<name>` (
    LockedTillUtc datetime,
    TryCount int not null default(0),
    index `CommandType_CreatedAtUtc_IDX` (`CommandType`, `CreatedAtUtc`)
-)
+);
 ```
+
 Register Command queue
 
 ```cs
@@ -37,30 +36,16 @@ services
         c.UseMySqlStorage(
             new MySqlCommandQueueStorageOptions
             {
-                TableName = <tablename>;
+                TableName = <tablename>,
             })
     );
-```
-
-Миграция с версии 0.0.5
-
-Вместо отдельной регистрации репозитория используйте при конфигурации AddLocalCommandQueue метод UseMySqlStorage.
-
-Устаревшая регистрация (версия 0.0.5)
-```cs
-    servicesCollection.AddMySqlCommandsStorage((sp, c) =>
-    {
-        c.ConnectionString = <connectionstring>;
-        c.TableName = <tablename>;
-    });
-    servicesCollection.AddLocalCommandQueue();
 ```
 
 Register Command worker
 
 ```cs
 services
-    .AddSingletone<MenuService>()
+    .AddSingleton<MenuService>()
     .AddScoped<ResizeImageHandler>() // scoped for example
     .AddLocalCommandQueueWorker(c =>
     {
@@ -74,61 +59,41 @@ services
         c.AddCommandHandler<UpdateMenuCommand, MenuService>(service => service.Process);
         c.ConfigureSerializer(options =>
         {
-            options.Converters.Add(new LegacyUUIdConverter());
+            options.Converters.Add(new LegacyUUIdConverter()); // your own JsonConverter
         });
     });
 ```
 
-Миграция с версии 0.0.5
+Inject `ICommandsQueue` in your code to enqueue commands in the same transaction as your data
 
-Вместо отдельной регистрации репозитория используйте при конфигурации AddLocalCommandQueueWorker метод UseMySqlStorage.
-
-Устаревшая регистрация (версия 0.0.5)
 ```cs
-    services
-    .AddSingletone<MenuService>()
-    .AddScoped<ResizeImageHandler>() // scoped for example
-    .AddMySqlCommandsStorage((sp, c) =>
-    {
-        c.ConnectionString = <connectionstring>;
-        c.TableName = <tablename>;
-    })
-    .AddLocalCommandQueueWorker(c =>
-    {
-        c.PrefetchCount = 10;
-        c.AddCommandHandler<ResizeImageCommand, ResizeImageHandler>();
-        c.AddCommandHandler<UpdateMenuCommand, MenuService>(service => service.Process);
-        c.ConfigureSerializer(options =>
-        {
-            options.Converters.Add(new LegacyUUIdConverter());
-        });
-    });
-```
+public class Service
+{
+    private readonly ICommandsQueue _commandsQueue;
 
-Inject `ICommandsQueue` in your code to enqueue commands
-```cs
-public class Service {
-    private ICommandsQueue _commandsQueue;
-    
-    public Service(ICommandsQueue commandsQueue) {
+    public Service(ICommandsQueue commandsQueue)
+    {
         _commandsQueue = commandsQueue;
     }
-    
-    public Task DoWork() {
-        ...
-        var command = new LocalCommand();
 
-        await using var connection = new MySqlConnection(_database.GetConnectionString());
-        await connection.OpenAsync(CancellationToken.None);
-        await using var transaction = await connection.BeginTransactionAsync();
+    public async Task DoWork(CancellationToken ct)
+    {
+        var command = new ResizeImageCommand();
 
-        await commandsQueue.Enqueue(connection, transaction, new [] { command }, CancellationToken.None);
+        await using var connection = new MySqlConnection(<connectionstring>);
+        await connection.OpenAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
 
-        await transaction.CommitAsync();
-        ...
+        // ... your own changes in the same transaction
+
+        await _commandsQueue.Enqueue(connection, transaction, new[] { command }, ct);
+
+        await transaction.CommitAsync(ct);
     }
 }
 ```
+
+Pass `processingStartTime` (UTC) to `Enqueue` to postpone the processing of the commands.
 
 ## Use with PostgreSQL storage
 
@@ -253,18 +218,10 @@ time of the worker's commands, otherwise another instance prefetches the command
 parallel. A worker without handlers is a configuration error and fails on registration. Give each command type
 to one worker per table: a type registered in two workers is processed by both, the same way as by two instances.
 
-Migration from 0.1.0 (a breaking change, released as 0.2.0): `ILocalCommandsQueueWorkerStorage.Prefetch` takes the
-command types to prefetch, custom storages must filter by them and be rebuilt against 0.2.0. Commands with no handler
-in any worker of the application are no longer prefetched and stay in the table: the storage summary logs a warning
-with their types when they appear (the table may be shared with another application that handles them), they are
-counted in the `local-command-queue-length` gauge as well. The MySQL storage filters by `CommandType`, add an index
-for it to existing tables, otherwise the prefetch scans and locks the commands of other workers. The index on
-`LockedTillUtc` is no longer used, drop it
-
-```mysql
-alter table `<name>` add index `CommandType_CreatedAtUtc_IDX` (`CommandType`, `CreatedAtUtc`);
-alter table `<name>` drop index `<name>_LockedTillUtc_IDX`;
-```
+Commands with no handler in any worker of the application are not prefetched and stay in the table: the storage
+summary logs a warning with their types when they appear (the table may be shared with another application that
+handles them), they are counted in the `local-command-queue-length` gauge as well. Custom storages
+(`ILocalCommandsQueueWorkerStorage`) get the command types to prefetch in `Prefetch` and must filter by them.
 
 The storage summary is collected once for the workers of the application with equal storages (`Equals`): MySQL
 storages are equal for the same server, port, database and table, PostgreSQL storages for the same host, port,
@@ -274,11 +231,12 @@ summed up in the gauges.
 
 ## Use with OpenTelemetry
 
-Register instruments by AsuTrack.LocalQueue.OpenTelemetry package
+Register instruments by the `AsuTrack.LocalQueue.OpenTelemetry` package
+
 ```cs
 services
     .AddOpenTelemetry()
-    .WithMetrics(c => 
-        c.AddDodoLocalCommandQueueInstrumentation()
-        c.AddPrometheusExporter());
+    .WithMetrics(c => c
+        .AddDodoLocalCommandQueueInstrumentation()
+        .AddPrometheusExporter());
 ```
