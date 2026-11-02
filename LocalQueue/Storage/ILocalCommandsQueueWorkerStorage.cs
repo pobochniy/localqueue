@@ -26,11 +26,18 @@ public interface ILocalCommandsQueueWorkerStorage
         CancellationToken ct);
 
     /// <summary>
-    /// Delete completed command from storage.
+    /// Delete completed command from storage, if it is still held by the worker that prefetched it.
     /// </summary>
+    /// <remarks>
+    /// Every prefetch increments <see cref="CommandRecord.TryCount"/>: the command is deleted only while its
+    /// <c>TryCount</c> equals <paramref name="tryCount"/>, so a command prefetched again by another instance after
+    /// the lock is over stays for that instance.
+    /// </remarks>
     /// <param name="id">Command id.</param>
+    /// <param name="tryCount"><see cref="CommandRecord.TryCount"/> of the prefetched command.</param>
     /// <param name="ct">A token to cancel the operation. </param>
-    Task Delete(Guid id, CancellationToken ct);
+    /// <returns><c>false</c> when the command is prefetched by another instance or deleted already.</returns>
+    Task<bool> Delete(Guid id, int tryCount, CancellationToken ct);
 
     /// <summary>
     /// Get statistics for commands in storage <see cref="LocalQueueStorageSummary"/>>  
@@ -39,12 +46,18 @@ public interface ILocalCommandsQueueWorkerStorage
     Task<IEnumerable<LocalQueueStorageSummary>> GetSummary(CancellationToken ct);
 
     /// <summary>
-    /// Make command invisible for specified timeout.
+    /// Make command invisible for specified timeout from now, if it is still held by the worker that prefetched it.
     /// </summary>
+    /// <remarks>
+    /// The lock is set only while <see cref="CommandRecord.TryCount"/> equals <paramref name="tryCount"/>
+    /// (see <see cref="Delete"/>); the check and the update must be one atomic statement.
+    /// </remarks>
     /// <param name="id">Command id.</param>
+    /// <param name="tryCount"><see cref="CommandRecord.TryCount"/> of the prefetched command.</param>
     /// <param name="timeout">Lock timeout.</param>
     /// <param name="ct">A token to cancel the operation. </param>
-    Task MakeInvisibleFor(Guid id, TimeSpan timeout, CancellationToken ct);
+    /// <returns><c>false</c> when the command is prefetched by another instance or deleted already.</returns>
+    Task<bool> MakeInvisibleFor(Guid id, int tryCount, TimeSpan timeout, CancellationToken ct);
 
     /// <summary>
     /// The datasource name

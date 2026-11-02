@@ -40,6 +40,8 @@ internal class CommandFetcher
             try
             {
                 using var scope = _serviceScopeFactory.CreateScope();
+                // Before the prefetch: the lock in the storage is taken later, so it ends no earlier than this
+                var lockedTillMs = Environment.TickCount64 + (long)_options.InvisibilityTimeout.TotalMilliseconds;
                 var commandContexts = await _storageFactory(scope.ServiceProvider).Prefetch(
                     _options.PrefetchCount,
                     _options.InvisibilityTimeout,
@@ -49,6 +51,7 @@ internal class CommandFetcher
                 foreach (var command in commandContexts)
                 {
                     fetchedInIteration = true;
+                    command.LocalLockedTillMs = lockedTillMs;
                     await _fetchWriter.WriteAsync(command, stoppingToken);
                 }
             }

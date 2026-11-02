@@ -48,6 +48,9 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
     {
         using var scope = _scopeFactory.CreateScope();
         var storage = _storageFactory(scope.ServiceProvider);
+        // ICommandLease of the handler extends the lock of the command of this async flow
+        var lease = new CommandLeaseState(commandRecord, storage);
+        CommandLease.Current = lease;
         try
         {
             var command = _serializer.Deserialize<TCommand>(commandRecord.Data)!;
@@ -55,10 +58,26 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
 
             await _retryRunner.Execute(async () =>
                 {
-                    if (!commandRecord.IsLockExpired)
+                    // The lock extended by the handler counts, not the one taken at prefetch
+                    if (!lease.IsExpired)
                     {
-                        await _commandHandler(scope.ServiceProvider, command, ct);
-                        await storage.Delete(commandRecord.Id, ct);
+                        try
+                        {
+                            await _commandHandler(scope.ServiceProvider, command, ct);
+                        }
+                        catch (Exception e) when (IsLeaseExpired(e, commandRecord.Id))
+                        {
+                            // The command may already be taken by another instance: no retries, no delete
+                            _logger.LogWarning(e, "Command {Id} processing stopped, the lock is over", commandRecord.Id);
+                            return;
+                        }
+
+                        if (!await storage.Delete(commandRecord.Id, commandRecord.TryCount, ct))
+                        {
+                            _logger.LogWarning(
+                                "Command {Id} is processed, but not deleted: the lock was over and another instance has prefetched it",
+                                commandRecord.Id);
+                        }
 
                         var processingTime = sw.Elapsed;
                         var processingLag = DateTime.UtcNow - commandRecord.CreatedAtUtc;
@@ -66,9 +85,7 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
                     }
                 },
                 e => _logger.LogError(e, "Command {Id} processing failed", commandRecord.Id),
-                () => _retryPolicy.RedeliverAfter(commandRecord.TryCount) is { } delay
-                    ? storage.MakeInvisibleFor(commandRecord.Id, delay, ct)
-                    : Task.CompletedTask,
+                () => RedeliverLater(commandRecord, storage, lease, ct),
                 ct);
         }
         catch (OperationCanceledException)
@@ -79,5 +96,38 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
         {
             _logger.LogError(e, "Command {Id} processing failed", commandRecord.Id);
         }
+        finally
+        {
+            // Work the handler has left running keeps the lease through its execution context
+            lease.Release();
+        }
+    }
+
+    private async Task RedeliverLater(CommandRecord commandRecord, ILocalCommandsQueueWorkerStorage storage,
+        CommandLeaseState lease, CancellationToken ct)
+    {
+        if (lease.IsReleased || _retryPolicy.RedeliverAfter(commandRecord.TryCount) is not { } delay)
+        {
+            return;
+        }
+
+        if (!await storage.MakeInvisibleFor(commandRecord.Id, commandRecord.TryCount, delay, ct))
+        {
+            _logger.LogWarning(
+                "Command {Id} is not hidden after the failure: the lock was over and another instance has prefetched it",
+                commandRecord.Id);
+        }
+    }
+
+    // The handler may let the exception go wrapped: by Task.WhenAll, a library or its own exception
+    private static bool IsLeaseExpired(Exception? e, Guid commandId)
+    {
+        return e switch
+        {
+            null => false,
+            CommandLeaseExpiredException expired => expired.CommandId == commandId,
+            AggregateException aggregate => aggregate.InnerExceptions.Any(inner => IsLeaseExpired(inner, commandId)),
+            _ => IsLeaseExpired(e.InnerException, commandId)
+        };
     }
 }

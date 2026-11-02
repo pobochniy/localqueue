@@ -35,5 +35,9 @@ public class CommandRecord
     /// </summary>
     public int TryCount { get; init; }
 
-    internal bool IsLockExpired => LockedTillUtc < DateTime.UtcNow;
+    /// <summary>
+    /// The end of the prefetch lock by <see cref="Environment.TickCount64"/> of the instance: the timeout counted
+    /// from before the prefetch, so it is never later than the lock in the storage, whatever its clock is.
+    /// </summary>
+    internal long? LocalLockedTillMs { get; set; }
 }

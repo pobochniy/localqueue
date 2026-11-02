@@ -35,7 +35,7 @@ public sealed class WorkerHost : IDisposable
                             .AddOpenTelemetry()
                             .WithMetrics(c =>
                             {
-                                c.AddDodoLocalCommandQueueInstrumentation();
+                                c.AddLocalCommandQueueInstrumentation();
                                 c.AddPrometheusExporter();
                             });
                     })
