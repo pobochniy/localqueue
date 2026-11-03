@@ -29,7 +29,7 @@ internal class CommandsQueue : ICommandsQueue
             {
                 Id = Guid.NewGuid(),
                 Data = _serializer.Serialize(c),
-                CommandType = c.GetType().FullName!,
+                CommandType = CommandTypes.NameOf(c.GetType()),
                 CreatedAtUtc = DateTime.UtcNow,
                 LockedTillUtc = processingStartTime
             })

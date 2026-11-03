@@ -60,6 +60,17 @@ public sealed class WorkerHost : IDisposable
             }));
     }
 
+    public static WorkerHost Named(UseWorkerStorage useStorage, string connectionString, string localCommandsQueueTableName)
+    {
+        return new WorkerHost(services => services
+            .AddSingleton<NamedLocalCommandHandler>()
+            .AddLocalCommandQueueWorker(c =>
+            {
+                useStorage(c, connectionString, localCommandsQueueTableName);
+                c.AddCommandHandler<NamedLocalCommand, NamedLocalCommandHandler>();
+            }));
+    }
+
     public static WorkerHost TwoDatabases(UseWorkerStorage useStorage, string connectionString1, string localCommandsQueueTableName1,
         string connectionString2, string localCommandsQueueTableName2)
     {

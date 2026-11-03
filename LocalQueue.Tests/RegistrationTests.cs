@@ -723,8 +723,7 @@ public static class ServiceProviderAssertionExtension
     public static void AssertServiceHasCommandType<TCommand>(this IServiceProvider serviceProvider)
     {
         var commandTypes = serviceProvider.GetServices<StorageSummarySource>().Single().CommandTypes;
-        var commandType = commandTypes.FirstOrDefault(t => t == typeof(TCommand).FullName!);
-        Assert.That(commandType, Is.Not.Null);
+        Assert.That(commandTypes, Does.ContainKey(CommandTypes.NameOf<TCommand>()));
     }
 
 }

@@ -7,9 +7,14 @@ namespace LocalQueue.Diagnostics;
 /// <summary>
 /// Storage of a worker and the command types it has handlers for
 /// </summary>
+/// <param name="StorageFactory">Storage of the worker.</param>
+/// <param name="CommandTypes">
+/// Every name the worker takes the commands by (the name, the previous names and the full name of the class) →
+/// the name of the command type: the rows under the previous names are counted under the name.
+/// </param>
 internal record StorageSummarySource(
     Func<IServiceProvider, ILocalCommandsQueueWorkerStorage> StorageFactory,
-    IReadOnlyCollection<string> CommandTypes);
+    IReadOnlyDictionary<string, string> CommandTypes);
 
 /// <summary>
 /// Collects the summary of the storages of all the workers of the application
@@ -78,11 +83,14 @@ internal class StorageSummaryCollector
 
         var storageGroups = storages
             .GroupBy(x => x.Storage, x => x.Source.CommandTypes)
-            .Select(group => (Storage: group.Key, CommandTypes: group.SelectMany(t => t).ToHashSet()))
+            .Select(group => (Storage: group.Key, CommandTypes: group
+                .SelectMany(t => t)
+                .DistinctBy(t => t.Key)
+                .ToDictionary(t => t.Key, t => t.Value, StringComparer.Ordinal)))
             .ToArray();
         foreach (var group in storageGroups)
         {
-            LocalQueueMetrics.InitializeCommandTypes(group.Storage.DataSourceName, group.CommandTypes);
+            LocalQueueMetrics.InitializeCommandTypes(group.Storage.DataSourceName, group.CommandTypes.Values.Distinct());
         }
 
         var summaries = await Task.WhenAll(storageGroups
@@ -92,10 +100,12 @@ internal class StorageSummaryCollector
         // their summaries are recorded together, otherwise they overwrite each other's gauges
         foreach (var dataSource in storageGroups
                      .Zip(summaries, (group, summary) => (group.Storage.DataSourceName, Summary: summary))
+                     .Select((x, index) => (x.DataSourceName, x.Summary, Index: index))
                      .GroupBy(x => x.DataSourceName))
         {
             if (dataSource.Any(x => x.Summary == null)) continue;
-            LocalQueueMetrics.RecordStorageSummary(dataSource.Key, Merge(dataSource.SelectMany(x => x.Summary!)));
+            LocalQueueMetrics.RecordStorageSummary(dataSource.Key,
+                Merge(dataSource.SelectMany(x => ByName(x.Summary!, storageGroups[x.Index].CommandTypes))));
         }
 
         if (storages.Count < _sources.Count) return;
@@ -108,7 +118,7 @@ internal class StorageSummaryCollector
             var unhandledCommandTypes = dataSource
                 .SelectMany(x => x.Summary!
                     .Select(s => s.CommandType)
-                    .Where(t => !x.Group.CommandTypes.Contains(t)))
+                    .Where(t => !x.Group.CommandTypes.ContainsKey(t)))
                 .ToHashSet();
             LogUnhandledCommandTypes(dataSource.Key, unhandledCommandTypes);
         }
@@ -126,6 +136,18 @@ internal class StorageSummaryCollector
             _logger.LogError(e, "Error when processing storage summary of {DataSource}.", storage.DataSourceName);
             return null;
         }
+    }
+
+    // Rows of the type stored under its previous names are counted under the name of the type
+    private static IEnumerable<LocalQueueStorageSummary> ByName(IEnumerable<LocalQueueStorageSummary> summary,
+        IReadOnlyDictionary<string, string> commandTypes)
+    {
+        return summary.Select(x => new LocalQueueStorageSummary
+        {
+            CommandType = commandTypes.GetValueOrDefault(x.CommandType, x.CommandType),
+            Count = x.Count,
+            MaxTryCount = x.MaxTryCount
+        });
     }
 
     private static LocalQueueStorageSummary[] Merge(IEnumerable<LocalQueueStorageSummary> summary)

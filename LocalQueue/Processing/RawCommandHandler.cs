@@ -18,7 +18,9 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
     private readonly Func<IServiceProvider, ILocalCommandsQueueWorkerStorage> _storageFactory;
     private readonly FuncCommandHandler<TCommand> _commandHandler;
 
-    public string CommandType { get; } = typeof(TCommand).FullName!;
+    private readonly HashSet<string> _acceptedCommandTypes;
+
+    public string CommandType { get; }
 
     public RawCommandHandler(
         CommandProcessingOptions options,
@@ -33,6 +35,9 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
         _scopeFactory = scopeFactory;
         _logger = logger;
         _serializer = serializer;
+        var names = CommandTypes.Of(typeof(TCommand));
+        CommandType = names.Name;
+        _acceptedCommandTypes = names.Accepted.ToHashSet(StringComparer.Ordinal);
         _retryPolicy = options.RetryOptions.TryGetValue(CommandType, out var retryPolicy)
             ? retryPolicy
             : new RetryPolicyOptions();
@@ -41,7 +46,7 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
 
     public bool CanHandle(CommandRecord commandRecord)
     {
-        return commandRecord.CommandType == CommandType;
+        return _acceptedCommandTypes.Contains(commandRecord.CommandType);
     }
 
     public async Task Handle(CommandRecord commandRecord, CancellationToken ct)
@@ -53,6 +58,13 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
         CommandLease.Current = lease;
         try
         {
+            // Beyond the limit: the previous delivery didn't finish, the process was killed in the middle of the command
+            if (IsLastAttemptSpent(commandRecord.TryCount - 1))
+            {
+                await GiveUp(commandRecord, storage, ct);
+                return;
+            }
+
             var command = _serializer.Deserialize<TCommand>(commandRecord.Data)!;
             var sw = Stopwatch.StartNew();
 
@@ -81,7 +93,7 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
 
                         var processingTime = sw.Elapsed;
                         var processingLag = DateTime.UtcNow - commandRecord.CreatedAtUtc;
-                        LocalQueueMetrics.RecordPostProcessingMetrics(commandRecord, processingTime, processingLag);
+                        LocalQueueMetrics.RecordPostProcessingMetrics(CommandType, processingTime, processingLag);
                     }
                 },
                 e => _logger.LogError(e, "Command {Id} processing failed", commandRecord.Id),
@@ -106,7 +118,18 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
     private async Task RedeliverLater(CommandRecord commandRecord, ILocalCommandsQueueWorkerStorage storage,
         CommandLeaseState lease, CancellationToken ct)
     {
-        if (lease.IsReleased || _retryPolicy.RedeliverAfter(commandRecord.TryCount) is not { } delay)
+        if (lease.IsReleased)
+        {
+            return;
+        }
+
+        if (IsLastAttemptSpent(commandRecord.TryCount))
+        {
+            await GiveUp(commandRecord, storage, ct);
+            return;
+        }
+
+        if (_retryPolicy.RedeliverAfter(commandRecord.TryCount) is not { } delay)
         {
             return;
         }
@@ -115,6 +138,24 @@ internal class RawCommandHandler<TCommand> : IRawCommandHandler
         {
             _logger.LogWarning(
                 "Command {Id} is not hidden after the failure: the lock was over and another instance has prefetched it",
+                commandRecord.Id);
+        }
+    }
+
+    private bool IsLastAttemptSpent(int attempts) => _retryPolicy.MaxAttempts is { } max && attempts >= max;
+
+    private async Task GiveUp(CommandRecord commandRecord, ILocalCommandsQueueWorkerStorage storage, CancellationToken ct)
+    {
+        _logger.LogError(
+            "Command {Id} of {CommandType} is given up after {Attempts} attempts and stays in {DataSource} locked",
+            commandRecord.Id, CommandType, Math.Min(commandRecord.TryCount, _retryPolicy.MaxAttempts ?? int.MaxValue),
+            storage.DataSourceName);
+        LocalQueueMetrics.RecordGivenUp(CommandType);
+
+        if (!await storage.MakeInvisibleFor(commandRecord.Id, commandRecord.TryCount, ICommandRetryPolicy.GivenUpLock, ct))
+        {
+            _logger.LogWarning(
+                "Command {Id} is not locked after it is given up: the lock was over and another instance has prefetched it",
                 commandRecord.Id);
         }
     }

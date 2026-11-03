@@ -25,6 +25,10 @@ public class RetryPolicyOptions : ICommandRetryPolicy
     public TimeSpan? RetryAfterFailure { get; set; }
 
     /// <inheritdoc />
+    /// <remarks>Default is null: the command is delivered until it succeeds.</remarks>
+    public int? MaxAttempts { get; set; }
+
+    /// <inheritdoc />
     public TimeSpan BackoffFor(int retry) => BackoffInterval;
 
     /// <inheritdoc />

@@ -87,6 +87,26 @@ public class StorageSummaryCollectorTests
     }
 
     [Test]
+    public async Task ShouldCountCommandsOfPreviousNamesUnderTheName()
+    {
+        var logger = new ListLogger();
+        var dataSourceName = $"datasource_{Guid.NewGuid():N}";
+        var storage = StorageMock(dataSourceName, "send-mail", "Old.SendMailCommand", "OtherCommand");
+
+        await RunHostedService(logger, new StorageSummarySource(_ => storage.Object, new Dictionary<string, string>
+        {
+            ["send-mail"] = "send-mail",
+            ["Old.SendMailCommand"] = "send-mail",
+            ["OtherCommand"] = "OtherCommand"
+        }));
+
+        var queueLength = LocalQueueMetricsTests.Observe(LocalQueueMetricsTests.QueueLengthInstrumentName);
+        Assert.That(queueLength[(dataSourceName, "send-mail")], Is.EqualTo(2));
+        Assert.That(queueLength.ContainsKey((dataSourceName, "Old.SendMailCommand")), Is.False);
+        Assert.That(logger.Messages, Is.Empty);
+    }
+
+    [Test]
     public async Task ShouldCollectSummaryOfOtherStoragesWhenStorageFactoryFails()
     {
         var logger = new ListLogger();
@@ -158,7 +178,7 @@ public class StorageSummaryCollectorTests
         {
             Interlocked.Increment(ref createdStorages);
             return StorageMock(dataSourceName, "UnknownCommand").Object;
-        }, ["CommandA"]);
+        }, Names("CommandA"));
 
         await RunHostedService(logger, TimeSpan.FromMilliseconds(50), source);
 
@@ -185,12 +205,18 @@ public class StorageSummaryCollectorTests
     private static StorageSummarySource Source(Mock<ILocalCommandsQueueWorkerStorage> storage,
         params string[] commandTypes)
     {
-        return new StorageSummarySource(_ => storage.Object, commandTypes);
+        return new StorageSummarySource(_ => storage.Object, Names(commandTypes));
+    }
+
+    // Each command type is taken by its own name only
+    private static Dictionary<string, string> Names(params string[] commandTypes)
+    {
+        return commandTypes.ToDictionary(x => x, x => x);
     }
 
     private static StorageSummarySource FailingSource(params string[] commandTypes)
     {
-        return new StorageSummarySource(_ => throw new InvalidOperationException("Storage is not ready"), commandTypes);
+        return new StorageSummarySource(_ => throw new InvalidOperationException("Storage is not ready"), Names(commandTypes));
     }
 
     private static Mock<ILocalCommandsQueueWorkerStorage> StorageMock(string dataSourceName,

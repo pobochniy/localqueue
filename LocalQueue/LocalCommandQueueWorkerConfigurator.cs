@@ -21,7 +21,10 @@ internal delegate IRawCommandHandler HandlerFactory(
 /// </summary>
 public class LocalCommandQueueWorkerConfigurator : CommandProcessingOptions
 {
+    // Keyed by the command type name (CommandTypes.NameOf): the retry policy and the metrics are keyed by it too
     private readonly Dictionary<string, HandlerFactory> _handlerRegistrations = new();
+    // Every name the worker takes the commands by → the command type
+    private readonly Dictionary<string, Type> _acceptedCommandTypes = new(StringComparer.Ordinal);
     private Func<IServiceProvider, ILocalCommandsQueueWorkerStorage>? _storageFactory;
 
     /// <summary>
@@ -64,7 +67,7 @@ public class LocalCommandQueueWorkerConfigurator : CommandProcessingOptions
     public LocalCommandQueueWorkerConfigurator AddCommandHandler<TCommand>(FuncCommandHandler<TCommand> funcHandler,
         ICommandRetryPolicy? retryOptions = null)
     {
-        _handlerRegistrations[typeof(TCommand).FullName!] = (serviceScopeFactory, options, storage, deserializer, loggerFactory)
+        _handlerRegistrations[AddCommandType<TCommand>()] = (serviceScopeFactory, options, storage, deserializer, loggerFactory)
             => new RawCommandHandler<TCommand>(
                 options,
                 storage,
@@ -86,7 +89,7 @@ public class LocalCommandQueueWorkerConfigurator : CommandProcessingOptions
         Func<THandler, Func<TCommand, CancellationToken, Task>> process,
         ICommandRetryPolicy? retryOptions = null) where THandler : notnull
     {
-        _handlerRegistrations[typeof(TCommand).FullName!] = (serviceScopeFactory, options, storage, deserializer, loggerFactory) => new RawCommandHandler<TCommand>(
+        _handlerRegistrations[AddCommandType<TCommand>()] = (serviceScopeFactory, options, storage, deserializer, loggerFactory) => new RawCommandHandler<TCommand>(
             options,
             storage,
             (provider, command, ct) => process(provider.GetRequiredService<THandler>())(command, ct),
@@ -101,7 +104,34 @@ public class LocalCommandQueueWorkerConfigurator : CommandProcessingOptions
     private void ConfigureRetryPolicy<TCommand>(ICommandRetryPolicy? retryPolicy)
     {
         if (retryPolicy == null) return;
-        RetryOptions.Add(typeof(TCommand).FullName!, retryPolicy);
+        if (retryPolicy.MaxAttempts < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(retryPolicy), retryPolicy.MaxAttempts,
+                $"{nameof(ICommandRetryPolicy.MaxAttempts)} of {typeof(TCommand).FullName} must be at least 1 or null.");
+        }
+
+        RetryOptions[CommandTypes.NameOf<TCommand>()] = retryPolicy;
+    }
+
+    // A name taken by two command types would hand the commands of one to the handler of the other
+    private string AddCommandType<TCommand>()
+    {
+        var names = CommandTypes.Of(typeof(TCommand));
+        foreach (var accepted in names.Accepted)
+        {
+            if (_acceptedCommandTypes.TryGetValue(accepted, out var other) && other != typeof(TCommand))
+            {
+                throw new InvalidOperationException(
+                    $"Command type name '{accepted}' of {typeof(TCommand).FullName} is already taken by {other.FullName}.");
+            }
+        }
+
+        foreach (var accepted in names.Accepted)
+        {
+            _acceptedCommandTypes[accepted] = typeof(TCommand);
+        }
+
+        return names.Name;
     }
 
     internal void RegisterWorker(IServiceCollection serviceCollection)
@@ -142,12 +172,13 @@ public class LocalCommandQueueWorkerConfigurator : CommandProcessingOptions
             sp.GetRequiredService<IServiceScopeFactory>(),
             _storageFactory,
             this,
-            _handlerRegistrations.Keys.ToArray(),
+            _acceptedCommandTypes.Keys.ToArray(),
             commandChannel,
             sp.GetRequiredService<ILogger<CommandFetcher>>()
         ));
         
-        serviceCollection.AddSingleton(new StorageSummarySource(_storageFactory, _handlerRegistrations.Keys.ToArray()));
+        serviceCollection.AddSingleton(new StorageSummarySource(_storageFactory,
+            _acceptedCommandTypes.ToDictionary(x => x.Key, x => CommandTypes.NameOf(x.Value), StringComparer.Ordinal)));
         serviceCollection.TryAddSingleton(sp => new StorageSummaryCollector(
             sp.GetServices<StorageSummarySource>(),
             sp.GetRequiredService<IServiceScopeFactory>(),

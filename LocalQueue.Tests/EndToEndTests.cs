@@ -164,6 +164,26 @@ public abstract class EndToEndTests
         });
     }
 
+    [Test, CancelAfter(10_000)]
+    public async Task CanProcessCommandOfNamedType()
+    {
+        await CreateTable(Database, TableName);
+
+        using var storageHost = CreateStorageHost(TableName);
+        await storageHost.StartAsync();
+
+        using var workerHost = WorkerHost.Named(UseWorkerStorage, ConnectionString(Database), TableName);
+        await workerHost.StartAsync();
+
+        var command = new NamedLocalCommand();
+        await EnqueueCommand(storageHost, Database, command);
+
+        await workerHost.GetRequiredService<NamedLocalCommandHandler>().WaitCommandHandled(command);
+        await AssertTableIsEmpty(TableName, Database);
+        await storageHost.StopAsync();
+        await workerHost.StopAsync();
+    }
+
     private async Task<LocalCommand> EnqueueCommand(StorageHost commandQueueHost, int database)
     {
         var command = new LocalCommand();
@@ -308,6 +328,11 @@ public abstract class TestCommand
 public class LocalCommand : TestCommand;
 
 public class OtherLocalCommand : TestCommand;
+
+[CommandType("named-local", "LocalQueue.Tests.OldNamedLocalCommand")]
+public class NamedLocalCommand : TestCommand;
+
+public class NamedLocalCommandHandler : TestCommandHandler<NamedLocalCommand>;
 
 public class LocalCommandHandler : TestCommandHandler<LocalCommand>;
 

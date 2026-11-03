@@ -135,6 +135,34 @@ services
     });
 ```
 
+## Command type names
+
+A command row keeps the name of its type, and the worker finds the handler by it. By default it is the full name of
+the class (`MyApp.Images.ResizeImageCommand`): renaming the class or moving it to another namespace leaves the
+commands already in the table without a handler. Give the command type a stable name instead
+
+```cs
+[CommandType("resize-image")]
+public class ResizeImageCommand { ... }
+```
+
+The name is at most 250 characters, the size of the `command_type` column. It is not inherited: a derived command
+is a command type of its own.
+
+The worker also takes the commands stored under the full name of the class, so the attribute may be added to a
+command that is already in use. To rename a command type later, list the names it was stored under before; new
+commands are stored under the new name only, and the metrics count the old rows under it too
+
+```cs
+[CommandType("resize-picture", "resize-image")]
+public class ResizePictureCommand { ... }
+```
+
+Two command types of one worker can't share a name or a previous name: the registration throws.
+
+`CommandTypes.NameOf<TCommand>()` gives the name to the code that writes the command rows itself, e.g. through an
+ORM in the transaction of its own changes, without `ICommandsQueue`.
+
 ## Retries
 
 Every command type gets its own retry policy. Without one a failing command is tried 3 times with 500ms
@@ -180,6 +208,32 @@ c.AddCommandHandler<ResizeImageCommand, ResizeImageHandler>(new ExponentialRetry
 `retry` is 1-based within the current delivery and starts over on the next one. `attempt` is `TryCount` from
 the command row — it is 1 on the first delivery and keeps growing, so it survives restarts and lets a command
 that keeps failing back off further every time.
+
+
+### Giving up
+
+Set `MaxAttempts` to stop delivering a command that never succeeds. A delivery is a prefetch, so a delivery the
+instance didn't finish — the process was killed in the middle of the command — counts too
+
+```cs
+c.AddCommandHandler<ResizeImageCommand, ResizeImageHandler>(new RetryPolicyOptions
+{
+    RetryAfterFailure = TimeSpan.FromMinutes(1),
+    MaxAttempts = 5,
+});
+```
+
+The command is given up when its last delivery fails and when it is prefetched beyond the limit: the handler
+doesn't run, the error is logged, the `local-command-queue-given-up` counter grows, and the command stays in the table
+locked for a hundred years (`ICommandRetryPolicy.GivenUpLock`) — for an investigation, and the
+`local-command-queue-max-try-count` gauge keeps showing it. To process it again, reset the row
+
+```sql
+update <name> set locked_till_utc = null, try_count = 0 where id = <id>;
+```
+
+A custom `ICommandRetryPolicy` sets the limit by overriding `MaxAttempts`; without it the command is delivered until
+it succeeds, as before.
 
 ## Workers for different command types
 
@@ -273,6 +327,12 @@ exception as well). `Extend` takes a positive duration of at most `ICommandLease
 after the handler has returned, from work it has left running. The instance counts the lock by its own monotonic
 clock from before each write to the database, so the clocks of the instance and of the database don't have to be
 synchronized.
+
+## Upgrading to 3.1
+
+Nothing to change: commands without `[CommandType]` are stored and found by the full name of the class, and retry
+policies without `MaxAttempts` never give up. Custom storages may see the previous names of command types in the
+`commandTypes` of `Prefetch`, see [Command type names](#command-type-names).
 
 ## Upgrading to 3.0
 

@@ -1,6 +1,5 @@
 ﻿using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
-using LocalQueue.Storage;
 
 namespace LocalQueue.Diagnostics;
 
@@ -24,6 +23,11 @@ internal static class LocalQueueMetrics
         "local-command-queue-completed",
         "count",
         "Number of command handled by type");
+
+    private static readonly Counter<int> GivenUpCommandsCounter = Meter.CreateCounter<int>(
+        "local-command-queue-given-up",
+        "count",
+        "Number of commands given up by type after the attempts of the retry policy are spent");
 
     static LocalQueueMetrics()
     {
@@ -89,21 +93,26 @@ internal static class LocalQueueMetrics
         }
     }
 
-    internal static void RecordPostProcessingMetrics(CommandRecord commandContext, TimeSpan processingTime,
+    internal static void RecordPostProcessingMetrics(string commandType, TimeSpan processingTime,
         TimeSpan processingLag)
     {
-        var tags = BuildTags(commandContext);
+        var tags = BuildTags(commandType);
 
         CommandProcessingTimeHistogram.Record(processingTime.TotalSeconds, tags);
         CommandProcessingLagHistogram.Record(processingLag.TotalSeconds, tags);
         CompletedCommandsCounter.Add(1, tags);
     }
 
-    private static KeyValuePair<string, object?>[] BuildTags(CommandRecord commandContext)
+    internal static void RecordGivenUp(string commandType)
+    {
+        GivenUpCommandsCounter.Add(1, BuildTags(commandType));
+    }
+
+    private static KeyValuePair<string, object?>[] BuildTags(string commandType)
     {
         return new[]
         {
-            new KeyValuePair<string, object?>("commandType", commandContext.CommandType)
+            new KeyValuePair<string, object?>("commandType", commandType)
         };
     }
 }
